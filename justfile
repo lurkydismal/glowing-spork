@@ -63,8 +63,8 @@ docker-stats:
 # Remove dangling Docker images that are no longer referenced by any tag.
 docker-remove-unused-images:
     #!/usr/bin/env bash
-    set -euxo pipefail
-    docker rmi $(docker images -f "dangling=true" -q)
+    set -euo pipefail
+    docker images -f "dangling=true" -q | xargs -r docker rmi
 
 # Generate a cryptographically secure random alphanumeric token of length `N`. Uses `openssl rand` as the entropy source, encodes as Base64, removes padding and non-alphanumeric output, then retries until the result is exactly `N` characters using only `[A-Za-z0-9]`.
 generate-token length='32':
