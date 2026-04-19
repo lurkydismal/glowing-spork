@@ -228,8 +228,7 @@ async fn run() -> Result<(), AppError> {
                         warn!("ban {ban_id} not found");
                         AppError::BanNotFound { ban_id }
                     })?;
-
-                info!("new ban: {:?}", ban);
+                info!("new ban: {:#?}", ban);
                 trace!("ban {ban_id} handled successfully");
             }
         }
