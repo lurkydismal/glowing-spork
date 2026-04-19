@@ -53,3 +53,18 @@ docker-remove-unused-images:
     #!/usr/bin/env bash
     set -euxo pipefail
     docker rmi $(docker images -f "dangling=true" -q)
+
+# Generate a cryptographically secure random alphanumeric token of length `N`. Uses `openssl rand` as the entropy source, encodes as Base64, removes padding and non-alphanumeric output, then retries until the result is exactly `N` characters using only `[A-Za-z0-9]`.
+generate-token length='32':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    while true; do
+    s=$(openssl rand -base64 "$(({{ length }} + 3))" | tr -d '\n')
+    s="${s%%=*}"   # remove all trailing '='
+    s="${s:0:{{ length }}}"   # cut back to requested length
+    # allow only base64 alnum
+    if [[ "$s" =~ ^[A-Za-z0-9]+$ && ${#s} -eq {{ length }} ]]; then
+        echo "$s"
+        break
+    fi
+    done
