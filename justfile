@@ -18,7 +18,7 @@ build-debug triple=triple:
 
 # Run the debug binary for the selected target triple.
 run-debug triple=triple:
-    cargo run --target='{{ triple }}'
+    -cargo run --target='{{ triple }}'
 
 # Build a release binary for the selected target triple.
 build-release triple=triple:
@@ -26,7 +26,7 @@ build-release triple=triple:
 
 # Run the release binary for the selected target triple.
 run-release triple=triple:
-    cargo run --release --target='{{ triple }}'
+    -cargo run --release --target='{{ triple }}'
 
 # Pull images for all services, skipping services that have no build context.
 docker-pull:
@@ -46,7 +46,7 @@ docker-interact image='postgres':
 
 # Attach to a running service container without signal proxying.
 docker-attach image='postgres':
-    docker compose attach --sig-proxy=false '{{ image }}' sh || true
+    -docker compose attach --sig-proxy=false '{{ image }}' sh
 
 # Remove dangling Docker images that are no longer referenced by any tag.
 docker-remove-unused-images:
