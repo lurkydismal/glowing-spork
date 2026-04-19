@@ -1,4 +1,5 @@
 mod db;
+mod discord;
 mod init;
 mod listener;
 mod runtime;
