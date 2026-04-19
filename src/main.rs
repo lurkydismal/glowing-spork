@@ -1,4 +1,5 @@
 mod app;
+mod entity;
 
 use log::{error, info};
 
