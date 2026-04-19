@@ -83,18 +83,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut connection = init().await;
 
     loop {
-        let notif = connection.listener.recv().await?;
-        let ban_id: i32 = notif.payload().parse()?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("shutdown signal received");
+                break;
+            }
 
-        let ban = entity::bans::Entity::find_by_id(ban_id)
-            .one(&connection.db)
-            .await?;
+            notif = connection.listener.recv() => {
+                let notif = notif?;
 
-        info!("new ban: {:?}", ban);
+                trace!("Channel: {}", notif.channel());
+
+                let ban_id: i32 = notif.payload().parse()?;
+
+                let ban = entity::bans::Entity::find_by_id(ban_id)
+                    .one(&connection.db)
+                .await?;
+
+                info!("new ban: {:?}", ban);
+            }
+        }
     }
 
-    // WARN: Loop never exits
-    // close(&connection.db);
-    //
-    // Ok(())
+    close(&connection.db).await;
+
+    Ok(())
 }
