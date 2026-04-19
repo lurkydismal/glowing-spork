@@ -19,12 +19,6 @@ async fn close(db: &DatabaseConnection) {
 }
 
 async fn db_connect(url: &str) -> Result<DatabaseConnection, DbErr> {
-    // TODO: Decide if is better than tracing
-    // This disables sqlx's logging and enables sea-orm's logging with parameter injection,
-    // which is easier to debug.
-    // let env = env_logger::Env::default().filter_or("RUST_LOG", "info,sea_orm=debug,sqlx=warn");
-    // env_logger::Builder::from_env(env).init();
-
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_test_writer()
