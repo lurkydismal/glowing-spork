@@ -1,4 +1,4 @@
-use glowing_spork::entity;
+use crate::entity::prelude::Bans;
 use log::{debug, error, info, trace, warn};
 use sea_orm::EntityTrait as _;
 
@@ -69,7 +69,7 @@ pub(crate) async fn run() -> Result<(), AppError> {
                     }
                 })?;
                 info!("processing ban id {ban_id}");
-                let ban = entity::bans::Entity::find_by_id(ban_id)
+                let ban = Bans::find_by_id(ban_id)
                     .one(&connection.db)
                     .await
                     .map_err(|source| {
