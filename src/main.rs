@@ -1,7 +1,7 @@
 use glowing_spork::entity;
 use log::{debug, error, info, trace, warn};
 use sea_orm::{
-    ConnAcquireErr, Database, DatabaseConnection, DbErr, EntityTrait as _,
+    ConnAcquireErr, Database, DatabaseConnection, DbErr, EntityTrait as _, SqlxError,
     sqlx::postgres::PgListener,
 };
 
@@ -11,7 +11,6 @@ async fn check(db: &DatabaseConnection) {
 
 async fn close(db: &DatabaseConnection) {
     let _ = db.clone().close().await;
-
     assert!(matches!(
         db.ping().await,
         Err(DbErr::ConnectionAcquire(ConnAcquireErr::ConnectionClosed))
@@ -31,18 +30,48 @@ async fn db_connect(url: &str) -> Result<DatabaseConnection, DbErr> {
             check(&db).await;
             Ok(db)
         }
-        Err(err) => Err(err),
+        Err(err) => unimplemented!("{err}"),
     }
 }
 
-async fn listener_create<I, S>(url: &str, events: I) -> Result<PgListener, sea_orm::sqlx::Error>
+#[derive(Debug, thiserror::Error)]
+pub enum ListenerCreateError {
+    #[error("failed to connect to PostgreSQL listener at {url}")]
+    Connect {
+        url: String,
+        #[source]
+        source: SqlxError,
+    },
+
+    #[error("failed to subscribe to channel `{channel}`")]
+    Listen {
+        channel: String,
+        #[source]
+        source: SqlxError,
+    },
+}
+
+async fn listener_create<I, S>(url: &str, events: I) -> Result<PgListener, ListenerCreateError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let mut listener = PgListener::connect(url).await?; // SQLx
+    let mut listener =
+        PgListener::connect(url)
+            .await
+            .map_err(|source| ListenerCreateError::Connect {
+                url: url.to_owned(),
+                source,
+            })?;
     for event in events {
-        listener.listen(event.as_ref()).await?;
+        let channel = event.as_ref();
+        listener
+            .listen(channel)
+            .await
+            .map_err(|source| ListenerCreateError::Listen {
+                channel: channel.to_owned(),
+                source,
+            })?;
     }
     Ok(listener)
 }
@@ -69,43 +98,72 @@ async fn init() -> Connection {
         Ok(db) => db,
         Err(err) => unimplemented!("{err}"),
     };
-
-    let listener = match listener_create(&url, vec!["bans_inserted"]).await {
+    let listener = match listener_create(&url, ["bans_inserted"]).await {
         Ok(db) => db,
         Err(err) => unimplemented!("{err}"),
     };
-
     Connection { db, listener }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut connection = init().await;
+#[derive(Debug, thiserror::Error)]
+enum AppError {
+    #[error("failed to receive notification")]
+    Recv(#[from] sea_orm::sqlx::Error),
 
+    #[error("invalid ban id payload `{payload}`")]
+    ParseBanId {
+        payload: String,
+        #[source]
+        source: std::num::ParseIntError,
+    },
+
+    #[error("database query failed for ban id {ban_id}")]
+    QueryBan {
+        ban_id: i32,
+        #[source]
+        source: sea_orm::DbErr,
+    },
+
+    #[error("ban {ban_id} not found")]
+    BanNotFound { ban_id: i32 },
+
+    #[error("failed to wait for Ctrl+C")]
+    CtrlC(#[from] std::io::Error),
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(err) = run().await {
+        error!("{err}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), AppError> {
+    let mut connection = init().await;
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            result = tokio::signal::ctrl_c() => {
+                result?;
                 info!("shutdown signal received");
                 break;
             }
-
             notif = connection.listener.recv() => {
                 let notif = notif?;
-
                 trace!("Channel: {}", notif.channel());
-
-                let ban_id: i32 = notif.payload().parse()?;
-
+                let payload = notif.payload();
+                let ban_id: i32 = payload.parse().map_err(|source| AppError::ParseBanId {
+                    payload: payload.to_owned(),
+                    source,
+                })?;
                 let ban = entity::bans::Entity::find_by_id(ban_id)
                     .one(&connection.db)
-                .await?;
-
+                .await.map_err(|source| AppError::QueryBan { ban_id, source })?
+                    .ok_or(AppError::BanNotFound { ban_id })?;
                 info!("new ban: {:?}", ban);
             }
         }
     }
-
     close(&connection.db).await;
-
     Ok(())
 }

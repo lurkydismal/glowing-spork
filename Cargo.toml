@@ -13,6 +13,7 @@ sea-orm = { version = "1.1.20", features = [
     "debug-print",
     "macros",
 ] }
+thiserror = "2.0.18"
 tokio = { version = "1.52.1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["parking_lot"] }
