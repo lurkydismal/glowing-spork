@@ -27,3 +27,29 @@ build-release triple=triple:
 # Run the release binary for the selected target triple.
 run-release triple=triple:
     cargo run --release --target='{{ triple }}'
+
+# Pull images for all services, skipping services that have no build context.
+docker-pull:
+    docker compose  pull --ignore-buildable
+
+# Start the app service and any dependencies needed by that service.
+docker-up-all:
+    just docker-up 'app'
+
+# Start one service in detached mode.
+docker-up image='postgres':
+    docker compose up -d '{{ image }}'
+
+# Open an interactive shell inside a running service container.
+docker-interact image='postgres':
+    docker compose exec '{{ image }}' bash
+
+# Attach to a running service container without signal proxying.
+docker-attach image='postgres':
+    docker compose attach --sig-proxy=false '{{ image }}' sh || true
+
+# Remove dangling Docker images that are no longer referenced by any tag.
+docker-remove-unused-images:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    docker rmi $(docker images -f "dangling=true" -q)
