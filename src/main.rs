@@ -27,28 +27,16 @@ async fn close(db: &DatabaseConnection) {
 
 /// Connects to the database and performs a basic health check.
 async fn db_connect(url: &str) -> Result<DatabaseConnection, DbErr> {
-    trace!("initializing test logger");
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_test_writer()
-        .init();
     debug!("attempting database connection");
     info!("connecting to database");
 
     // Use a SQLite in memory database so no setup needed.
     // SeaORM supports MySQL, Postgres, SQL Server as well.
-    match Database::connect(url).await {
-        Ok(db) => {
-            info!("database connection established");
-            check(&db).await;
-            debug!("database connection verified");
-            Ok(db)
-        }
-        Err(err) => {
-            error!("database connection failed: {err}");
-            unimplemented!("{err}")
-        }
-    }
+    let db = Database::connect(url).await?;
+    info!("database connection established");
+    check(&db).await;
+    debug!("database connection verified");
+    Ok(db)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -107,59 +95,49 @@ struct Connection {
     // TODO: Discord
 }
 
+#[derive(Debug, thiserror::Error)]
+enum InitError {
+    #[error("DATABASE_URL is missing: {0}")]
+    MissingDatabaseUrl(#[source] std::env::VarError),
+
+    #[error("EVENT_NAMES is missing: {0}")]
+    MissingEventNames(#[source] std::env::VarError),
+
+    #[error("failed to connect to database")]
+    Db(#[from] DbErr),
+
+    #[error("failed to create listener")]
+    Listener(#[from] ListenerCreateError),
+}
+
 /// Sets up the environment and constructs the runtime connection bundle.
-async fn init() -> Connection {
+async fn init() -> Result<Connection, InitError> {
     info!("initializing application environment");
 
     // Read .env
     let _ = dotenvy::dotenv();
 
     debug!("loaded environment file if present");
-    let url = match std::env::var("DATABASE_URL") {
-        Ok(url) => {
-            debug!("DATABASE_URL found");
-            url
-        }
-        Err(err) => {
-            error!("DATABASE_URL is missing: {err}");
-            unimplemented!("{err}")
-        }
-    };
-    let events = match std::env::var("EVENT_NAMES") {
-        Ok(value) => {
-            debug!("EVENT_NAMES found");
-            let events: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
-            debug!("parsed {} event names", events.len());
-            events
-        }
-        Err(err) => {
-            error!("EVENT_NAMES is missing: {err}");
-            unimplemented!("{err}")
-        }
-    };
+    let url = std::env::var("DATABASE_URL").map_err(InitError::MissingDatabaseUrl)?;
+    debug!("DATABASE_URL found");
+    let events = std::env::var("EVENT_NAMES").map_err(InitError::MissingEventNames)?;
+    debug!("EVENT_NAMES found");
+    let events: Vec<String> = events.split_whitespace().map(str::to_owned).collect();
+    debug!("parsed {} event names", events.len());
 
     // TODO: Discord things from env
 
-    let db = match db_connect(&url).await {
-        Ok(db) => db,
-        Err(err) => {
-            error!("database initialization failed: {err}");
-            unimplemented!("{err}")
-        }
-    };
-    let listener = match listener_create(&url, events).await {
-        Ok(db) => db,
-        Err(err) => {
-            error!("listener initialization failed: {err}");
-            unimplemented!("{err}")
-        }
-    };
+    let db = db_connect(&url).await?;
+    let listener = listener_create(&url, events).await?;
     info!("application environment initialized");
-    Connection { db, listener }
+    Ok(Connection { db, listener })
 }
 
 #[derive(Debug, thiserror::Error)]
 enum AppError {
+    #[error("failed during initialization")]
+    Init(#[from] InitError),
+
     #[error("failed to receive notification")]
     Recv(#[from] sea_orm::sqlx::Error),
 
@@ -196,8 +174,14 @@ async fn main() {
 
 /// Runs the main event loop that waits for shutdown or new ban notifications.
 async fn run() -> Result<(), AppError> {
+    trace!("initializing logger");
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_test_writer()
+        .init();
+
     info!("starting main event loop");
-    let mut connection = init().await;
+    let mut connection = init().await?;
     loop {
         trace!("waiting for shutdown signal or notification");
         tokio::select! {
