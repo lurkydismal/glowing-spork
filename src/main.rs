@@ -35,9 +35,15 @@ async fn db_connect(url: &str) -> Result<DatabaseConnection, DbErr> {
     }
 }
 
-async fn listener_create(url: &str) -> Result<PgListener, sea_orm::sqlx::Error> {
+async fn listener_create<I, S>(url: &str, events: I) -> Result<PgListener, sea_orm::sqlx::Error>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let mut listener = PgListener::connect(url).await?; // SQLx
-    listener.listen("bans_inserted").await?;
+    for event in events {
+        listener.listen(event.as_ref()).await?;
+    }
     Ok(listener)
 }
 
@@ -64,7 +70,7 @@ async fn init() -> Connection {
         Err(err) => unimplemented!("{err}"),
     };
 
-    let listener = match listener_create(&url).await {
+    let listener = match listener_create(&url, vec!["bans_inserted"]).await {
         Ok(db) => db,
         Err(err) => unimplemented!("{err}"),
     };
