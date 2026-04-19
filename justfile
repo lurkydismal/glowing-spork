@@ -40,6 +40,14 @@ docker-up-all:
 docker-up image='postgres':
     docker compose up -d '{{ image }}'
 
+# Stop all running containers in the current Docker Compose project without removing containers, networks, or volumes.
+docker-stop:
+    docker compose stop
+
+# Stop and remove containers, networks, and default resources created by the current Docker Compose project.
+docker-down:
+    docker compose down
+
 # Open an interactive shell inside a running service container.
 docker-interact image='postgres':
     docker compose exec '{{ image }}' bash
@@ -47,6 +55,10 @@ docker-interact image='postgres':
 # Attach to a running service container without signal proxying.
 docker-attach image='postgres':
     -docker compose attach --sig-proxy=false '{{ image }}' sh
+
+# Show a one-time snapshot of resource usage statistics for containers in the current Docker Compose project.
+docker-stats:
+    docker compose stats --no-stream
 
 # Remove dangling Docker images that are no longer referenced by any tag.
 docker-remove-unused-images:
