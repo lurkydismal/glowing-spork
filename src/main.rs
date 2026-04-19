@@ -32,9 +32,9 @@ async fn db_connect(url: &str) -> Result<DatabaseConnection, DbErr> {
         .with_max_level(tracing::Level::DEBUG)
         .with_test_writer()
         .init();
-
     debug!("attempting database connection");
     info!("connecting to database");
+
     // Use a SQLite in memory database so no setup needed.
     // SeaORM supports MySQL, Postgres, SQL Server as well.
     match Database::connect(url).await {
@@ -83,7 +83,6 @@ where
                 url: url.to_owned(),
                 source,
             })?;
-
     debug!("listener connected");
     for event in events {
         let channel = event.as_ref();
@@ -97,7 +96,6 @@ where
             })?;
         trace!("subscribed to channel `{channel}`");
     }
-
     info!("listener ready");
     Ok(listener)
 }
@@ -112,10 +110,11 @@ struct Connection {
 /// Sets up the environment and constructs the runtime connection bundle.
 async fn init() -> Connection {
     info!("initializing application environment");
+
     // Read .env
     let _ = dotenvy::dotenv();
-    debug!("loaded environment file if present");
 
+    debug!("loaded environment file if present");
     let url = match std::env::var("DATABASE_URL") {
         Ok(url) => {
             debug!("DATABASE_URL found");
@@ -123,6 +122,18 @@ async fn init() -> Connection {
         }
         Err(err) => {
             error!("DATABASE_URL is missing: {err}");
+            unimplemented!("{err}")
+        }
+    };
+    let events = match std::env::var("EVENT_NAMES") {
+        Ok(value) => {
+            debug!("EVENT_NAMES found");
+            let events: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
+            debug!("parsed {} event names", events.len());
+            events
+        }
+        Err(err) => {
+            error!("EVENT_NAMES is missing: {err}");
             unimplemented!("{err}")
         }
     };
@@ -136,15 +147,13 @@ async fn init() -> Connection {
             unimplemented!("{err}")
         }
     };
-
-    let listener = match listener_create(&url, ["bans_inserted"]).await {
+    let listener = match listener_create(&url, events).await {
         Ok(db) => db,
         Err(err) => {
             error!("listener initialization failed: {err}");
             unimplemented!("{err}")
         }
     };
-
     info!("application environment initialized");
     Connection { db, listener }
 }
@@ -189,7 +198,6 @@ async fn main() {
 async fn run() -> Result<(), AppError> {
     info!("starting main event loop");
     let mut connection = init().await;
-
     loop {
         trace!("waiting for shutdown signal or notification");
         tokio::select! {
@@ -203,10 +211,8 @@ async fn run() -> Result<(), AppError> {
                 debug!("notification received from listener");
                 let notif = notif?;
                 trace!("channel: {}", notif.channel());
-
                 let payload = notif.payload();
                 debug!("notification payload received");
-
                 let ban_id: i32 = payload.parse().map_err(|source| {
                     warn!("failed to parse ban id payload `{payload}`");
                     AppError::ParseBanId {
@@ -214,9 +220,7 @@ async fn run() -> Result<(), AppError> {
                         source,
                     }
                 })?;
-
                 info!("processing ban id {ban_id}");
-
                 let ban = entity::bans::Entity::find_by_id(ban_id)
                     .one(&connection.db)
                     .await
@@ -233,7 +237,6 @@ async fn run() -> Result<(), AppError> {
             }
         }
     }
-
     info!("leaving main event loop");
     close(&connection.db).await;
     Ok(())
