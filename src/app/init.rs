@@ -1,9 +1,11 @@
 use log::{debug, error, info, trace};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement};
+use std::{path::PathBuf, time::Instant};
 
 use crate::app::{
     db::db_connect,
     discord::start_discord_bot,
+    embed::EmbedTemplate,
     listener::{ListenerCreateError, listener_create},
     types::Connection,
 };
@@ -22,6 +24,20 @@ pub(crate) enum InitError {
     #[error("NEWSLETTER_DATABASE_URL is missing: {0}")]
     MissingNewsletterDatabaseUrl(#[source] std::env::VarError),
 
+    #[error("failed to read embed XML file `{path}`: {source}")]
+    ReadEmbedFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("invalid embed XML in `{path}`: {source}")]
+    InvalidEmbedXml {
+        path: PathBuf,
+        #[source]
+        source: quick_xml::Error,
+    },
+
     #[error("failed to connect to database: {0}")]
     Db(#[from] DbErr),
 
@@ -34,20 +50,56 @@ pub(crate) enum InitError {
 
 /// Ensures the SQLite table used by newsletter commands exists.
 async fn ensure_newsletter_schema(db: &DatabaseConnection) -> Result<(), DbErr> {
-    trace!("ensuring newsletter schema exists");
+    let started_at = Instant::now();
+    trace!("ensure_newsletter_schema started at {started_at:?}");
     db.execute(Statement::from_string(
         DbBackend::Sqlite,
         "CREATE TABLE IF NOT EXISTS newsletter_channels (channel_id INTEGER PRIMARY KEY NOT NULL)"
             .to_owned(),
     ))
     .await?;
-    debug!("newsletter schema is ready");
+    debug!("newsletter schema is ready in {:?}", started_at.elapsed());
     Ok(())
+}
+
+/// Loads and validates the embed XML template from the `EMBED_FILE` environment variable.
+///
+/// Falls back to the default template when `EMBED_FILE` is not set.
+fn load_embed_template() -> Result<EmbedTemplate, InitError> {
+    let started_at = Instant::now();
+    trace!("load_embed_template started at {started_at:?}");
+
+    let embed_path = match std::env::var("EMBED_FILE") {
+        Ok(path) => PathBuf::from(path),
+        Err(_) => {
+            debug!(
+                "EMBED_FILE was not provided; using default template (loaded in {:?})",
+                started_at.elapsed()
+            );
+            return Ok(EmbedTemplate::default_template());
+        }
+    };
+
+    let xml = std::fs::read_to_string(&embed_path).map_err(|source| InitError::ReadEmbedFile {
+        path: embed_path.clone(),
+        source,
+    })?;
+
+    let template = EmbedTemplate::from_xml(&xml).map_err(|source| InitError::InvalidEmbedXml {
+        path: embed_path,
+        source,
+    })?;
+    debug!(
+        "loaded and validated EMBED_FILE in {:?}",
+        started_at.elapsed()
+    );
+    Ok(template)
 }
 
 /// Sets up the environment and constructs the runtime connection bundle.
 pub(super) async fn init() -> Result<Connection, InitError> {
-    info!("initializing application environment");
+    let started_at = Instant::now();
+    info!("init started at {started_at:?}");
 
     // Read .env
     let _ = dotenvy::dotenv();
@@ -65,6 +117,8 @@ pub(super) async fn init() -> Result<Connection, InitError> {
         .map_err(InitError::MissingNewsletterDatabaseUrl)?;
     debug!("NEWSLETTER_DATABASE_URL found");
 
+    let embed_template = load_embed_template()?;
+
     let events: Vec<String> = events.split_whitespace().map(str::to_owned).collect();
     debug!("parsed {} event names", events.len());
 
@@ -78,7 +132,10 @@ pub(super) async fn init() -> Result<Connection, InitError> {
     let listener = listener_create(&url, events).await?;
     let discord = start_discord_bot(&discord_token, newsletter_db.clone()).await?;
 
-    info!("application environment initialized");
+    info!(
+        "application environment initialized in {:?}",
+        started_at.elapsed()
+    );
     Ok(Connection {
         db,
         newsletter_db,
@@ -86,5 +143,6 @@ pub(super) async fn init() -> Result<Connection, InitError> {
         discord_http: discord.http,
         discord_shard_manager: discord.shard_manager,
         discord_task: discord.task,
+        embed_template,
     })
 }

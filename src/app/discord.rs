@@ -3,6 +3,7 @@ use std::sync::Arc;
 use log::{debug, error, info, trace, warn};
 use poise::serenity_prelude as serenity;
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement, Value};
+use std::time::Instant;
 use tokio::sync::oneshot;
 
 /// Error type used by Discord command handlers.
@@ -31,26 +32,30 @@ type DiscordContext<'a> = poise::Context<'a, DiscordData, DiscordCommandError>;
 /// Registers the current channel in the SQLite newsletter table.
 #[poise::command(slash_command)]
 pub(super) async fn register(ctx: DiscordContext<'_>) -> Result<(), DiscordCommandError> {
-    trace!("register command invoked");
+    let started_at = Instant::now();
+    trace!("register command invoked at {started_at:?}");
     let channel_id = ctx.channel_id().get();
     debug!("attempting to register channel id {channel_id}");
     register_channel(&ctx.data().newsletter_db, channel_id).await?;
     info!("registered channel {channel_id} for newsletters");
     ctx.say("✅ This channel is now registered for ban newsletters.")
         .await?;
+    debug!("register command finished in {:?}", started_at.elapsed());
     Ok(())
 }
 
 /// Removes the current channel from the SQLite newsletter table.
 #[poise::command(slash_command)]
 pub(super) async fn unregister(ctx: DiscordContext<'_>) -> Result<(), DiscordCommandError> {
-    trace!("unregister command invoked");
+    let started_at = Instant::now();
+    trace!("unregister command invoked at {started_at:?}");
     let channel_id = ctx.channel_id().get();
     debug!("attempting to unregister channel id {channel_id}");
     unregister_channel(&ctx.data().newsletter_db, channel_id).await?;
     info!("unregistered channel {channel_id} from newsletters");
     ctx.say("✅ This channel has been removed from ban newsletters.")
         .await?;
+    debug!("unregister command finished in {:?}", started_at.elapsed());
     Ok(())
 }
 
@@ -59,7 +64,8 @@ pub(super) async fn start_discord_bot(
     token: &str,
     newsletter_db: DatabaseConnection,
 ) -> Result<DiscordRuntime, serenity::Error> {
-    info!("creating Discord framework");
+    let started_at = Instant::now();
+    info!("start_discord_bot started at {started_at:?}");
     let (http_tx, http_rx) = oneshot::channel();
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -106,7 +112,10 @@ pub(super) async fn start_discord_bot(
         serenity::Error::Other("discord setup channel unexpectedly closed")
     })?;
 
-    info!("Discord runtime handles ready");
+    info!(
+        "Discord runtime handles ready in {:?}",
+        started_at.elapsed()
+    );
     Ok(DiscordRuntime {
         http,
         shard_manager,
@@ -119,14 +128,18 @@ pub(super) async fn register_channel(
     db: &DatabaseConnection,
     channel_id: u64,
 ) -> Result<(), sea_orm::DbErr> {
-    trace!("inserting channel {channel_id} into newsletter_channels");
+    let started_at = Instant::now();
+    trace!("register_channel started at {started_at:?} for {channel_id}");
     db.execute(Statement::from_sql_and_values(
         DbBackend::Sqlite,
         "INSERT OR IGNORE INTO newsletter_channels (channel_id) VALUES (?)",
         vec![Value::BigUnsigned(Some(channel_id))],
     ))
     .await?;
-    debug!("channel {channel_id} insert completed");
+    debug!(
+        "channel {channel_id} insert completed in {:?}",
+        started_at.elapsed()
+    );
     Ok(())
 }
 
@@ -135,14 +148,18 @@ pub(super) async fn unregister_channel(
     db: &DatabaseConnection,
     channel_id: u64,
 ) -> Result<(), sea_orm::DbErr> {
-    trace!("deleting channel {channel_id} from newsletter_channels");
+    let started_at = Instant::now();
+    trace!("unregister_channel started at {started_at:?} for {channel_id}");
     db.execute(Statement::from_sql_and_values(
         DbBackend::Sqlite,
         "DELETE FROM newsletter_channels WHERE channel_id = ?",
         vec![Value::BigUnsigned(Some(channel_id))],
     ))
     .await?;
-    debug!("channel {channel_id} delete completed");
+    debug!(
+        "channel {channel_id} delete completed in {:?}",
+        started_at.elapsed()
+    );
     Ok(())
 }
 
@@ -150,7 +167,8 @@ pub(super) async fn unregister_channel(
 pub(super) async fn list_registered_channels(
     db: &DatabaseConnection,
 ) -> Result<Vec<u64>, sea_orm::DbErr> {
-    trace!("querying registered newsletter channels");
+    let started_at = Instant::now();
+    trace!("list_registered_channels started at {started_at:?}");
     let rows = db
         .query_all(Statement::from_string(
             DbBackend::Sqlite,
@@ -167,6 +185,10 @@ pub(super) async fn list_registered_channels(
         }
     }
 
-    debug!("loaded {} registered newsletter channels", channels.len());
+    debug!(
+        "loaded {} registered newsletter channels in {:?}",
+        channels.len(),
+        started_at.elapsed()
+    );
     Ok(channels)
 }

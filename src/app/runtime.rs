@@ -2,11 +2,12 @@ use crate::entity::{self, prelude::Bans};
 use log::{debug, error, info, trace, warn};
 use poise::serenity_prelude as serenity;
 use sea_orm::EntityTrait as _;
-use std::fmt::Write as _;
+use std::{fmt::Write as _, time::Instant};
 
 use crate::app::{
     db::close,
     discord::list_registered_channels,
+    embed::EmbedTemplate,
     init::{InitError, init},
 };
 
@@ -39,19 +40,38 @@ pub(crate) enum AppError {
     CtrlC(#[from] std::io::Error),
 }
 
+/// Expands a single template line by replacing known `{field}` placeholders.
+fn render_line(line_template: &str, ban: &entity::bans::Model) -> String {
+    line_template
+        .replace("{id}", &ban.id.to_string())
+        .replace("{intruder}", &ban.intruder)
+        .replace("{admin}", &ban.admin)
+        .replace("{type}", &ban.r#type)
+        .replace("{round_id}", &ban.round_id.to_string())
+        .replace("{server}", &ban.server)
+        .replace("{duration_end}", &ban.duration_end.to_string())
+        .replace("{reason}", &ban.reason)
+}
+
 /// Formats a detailed ban announcement for Discord newsletters.
-fn format_ban_message(ban: &entity::bans::Model) -> String {
-    trace!("formatting ban message for ban {}", ban.id);
+fn format_ban_message(template: &EmbedTemplate, ban: &entity::bans::Model) -> String {
+    let started_at = Instant::now();
+    trace!(
+        "format_ban_message started at {started_at:?} for ban {}",
+        ban.id
+    );
+
     let mut text = String::new();
-    let _ = writeln!(&mut text, "🚨 **new ban**");
-    let _ = writeln!(&mut text, "- id: `{}`", ban.id);
-    let _ = writeln!(&mut text, "- intruder: `{}`", ban.intruder);
-    let _ = writeln!(&mut text, "- admin: `{}`", ban.admin);
-    let _ = writeln!(&mut text, "- type: `{}`", ban.r#type);
-    let _ = writeln!(&mut text, "- round: `{}`", ban.round_id);
-    let _ = writeln!(&mut text, "- server: `{}`", ban.server);
-    let _ = writeln!(&mut text, "- ends: `{}`", ban.duration_end);
-    let _ = writeln!(&mut text, "- reason: `{}`", ban.reason);
+    let _ = writeln!(&mut text, "{}", template.title);
+    for line_template in &template.lines {
+        let _ = writeln!(&mut text, "{}", render_line(line_template, ban));
+    }
+
+    debug!(
+        "formatted ban message for {} in {:?}",
+        ban.id,
+        started_at.elapsed()
+    );
     text
 }
 
@@ -59,9 +79,12 @@ fn format_ban_message(ban: &entity::bans::Model) -> String {
 async fn broadcast_ban(
     http: &serenity::Http,
     newsletter_db: &sea_orm::DatabaseConnection,
+    template: &EmbedTemplate,
     ban: &entity::bans::Model,
 ) {
-    trace!("broadcasting ban {} to registered channels", ban.id);
+    let started_at = Instant::now();
+    trace!("broadcast_ban started at {started_at:?} for ban {}", ban.id);
+
     let channels = match list_registered_channels(newsletter_db).await {
         Ok(channels) => channels,
         Err(source) => {
@@ -75,7 +98,7 @@ async fn broadcast_ban(
         return;
     }
 
-    let message = format_ban_message(ban);
+    let message = format_ban_message(template, ban);
     for channel_id in channels {
         debug!("sending ban {} to channel {}", ban.id, channel_id);
         if let Err(source) = serenity::ChannelId::new(channel_id)
@@ -90,10 +113,14 @@ async fn broadcast_ban(
             info!("sent ban {} message to channel {}", ban.id, channel_id);
         }
     }
+    debug!("broadcast_ban finished in {:?}", started_at.elapsed());
 }
 
 /// Runs the main event loop that waits for shutdown or new ban notifications.
 pub(crate) async fn run() -> Result<(), AppError> {
+    let started_at = Instant::now();
+    trace!("run started at {started_at:?}");
+
     trace!("initializing logger");
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
@@ -112,7 +139,8 @@ pub(crate) async fn run() -> Result<(), AppError> {
                 break;
             }
             notif = connection.listener.recv() => {
-                debug!("notification received from listener");
+                let notif_started_at = Instant::now();
+                debug!("notification received from listener at {notif_started_at:?}");
                 let notif = notif?;
                 trace!("channel: {}", notif.channel());
                 let payload = notif.payload();
@@ -137,8 +165,18 @@ pub(crate) async fn run() -> Result<(), AppError> {
                         AppError::BanNotFound { ban_id }
                     })?;
                 info!("new ban: {:#?}", ban);
-                broadcast_ban(&connection.discord_http, &connection.newsletter_db, &ban).await;
-                trace!("ban {ban_id} handled successfully");
+                broadcast_ban(
+                    &connection.discord_http,
+                    &connection.newsletter_db,
+                    &connection.embed_template,
+                    &ban,
+                )
+                .await;
+                debug!(
+                    "ban {} handled successfully in {:?}",
+                    ban_id,
+                    notif_started_at.elapsed()
+                );
             }
         }
     }
@@ -150,5 +188,6 @@ pub(crate) async fn run() -> Result<(), AppError> {
     }
     close(&connection.newsletter_db).await;
     close(&connection.db).await;
+    debug!("run completed in {:?}", started_at.elapsed());
     Ok(())
 }

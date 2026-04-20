@@ -1,5 +1,6 @@
 use log::{debug, info, trace};
 use sea_orm::{SqlxError, sqlx::postgres::PgListener};
+use std::time::Instant;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ListenerCreateError {
@@ -27,7 +28,8 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    info!("creating PostgreSQL listener");
+    let started_at = Instant::now();
+    info!("listener_create started at {started_at:?}");
     trace!("connecting listener to database");
     let mut listener =
         PgListener::connect(url)
@@ -49,6 +51,6 @@ where
             })?;
         trace!("subscribed to channel `{channel}`");
     }
-    info!("listener ready");
+    info!("listener ready in {:?}", started_at.elapsed());
     Ok(listener)
 }
