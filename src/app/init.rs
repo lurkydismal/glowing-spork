@@ -22,13 +22,13 @@ pub(crate) enum InitError {
     #[error("NEWSLETTER_DATABASE_URL is missing: {0}")]
     MissingNewsletterDatabaseUrl(#[source] std::env::VarError),
 
-    #[error("failed to connect to database")]
+    #[error("failed to connect to database: {0}")]
     Db(#[from] DbErr),
 
-    #[error("failed to create listener")]
+    #[error("failed to create listener: {0}")]
     Listener(#[from] ListenerCreateError),
 
-    #[error("failed to start discord bot")]
+    #[error("failed to start discord bot: {0}")]
     Discord(#[from] poise::serenity_prelude::Error),
 }
 
@@ -51,6 +51,8 @@ pub(super) async fn init() -> Result<Connection, InitError> {
 
     // Read .env
     let _ = dotenvy::dotenv();
+
+    debug!("DB: {:#?}", std::env::var("DATABASE_URL"));
 
     debug!("loaded environment file if present");
     let url = std::env::var("DATABASE_URL").map_err(InitError::MissingDatabaseUrl)?;

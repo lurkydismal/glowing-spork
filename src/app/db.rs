@@ -26,7 +26,6 @@ pub(super) async fn db_connect(url: &str) -> Result<DatabaseConnection, DbErr> {
     debug!("attempting database connection");
     info!("connecting to database");
 
-    // Use a SQLite in memory database so no setup needed.
     // SeaORM supports MySQL, Postgres, SQL Server as well.
     let db = Database::connect(url).await?;
     info!("database connection established");

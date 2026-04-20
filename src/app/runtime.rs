@@ -1,4 +1,4 @@
-use crate::entity::prelude::Bans;
+use crate::entity::{self, prelude::Bans};
 use log::{debug, error, info, trace, warn};
 use poise::serenity_prelude as serenity;
 use sea_orm::EntityTrait as _;
@@ -12,7 +12,7 @@ use crate::app::{
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AppError {
-    #[error("failed during initialization")]
+    #[error("failed during initialization: {0}")]
     Init(#[from] InitError),
 
     #[error("failed to receive notification")]

@@ -8,7 +8,7 @@ export RUSTFLAGS := '-C target-cpu=native'
 # `os_family()` returns `"unix"` or `"windows"`.
 # This selects a Linux musl target for Unix-like systems and a GNU Windows target for Windows.
 
-triple := if os_family() == "unix" { "x86_64-unknown-linux-musl" } else { "x86_64-pc-windows-gnu" }
+triple := if os_family() == "unix" { "x86_64-unknown-linux-gnu" } else { "x86_64-pc-windows-gnu" }
 
 default: run-debug
 
