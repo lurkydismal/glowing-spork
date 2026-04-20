@@ -3,6 +3,8 @@ use std::sync::Arc;
 use poise::serenity_prelude as serenity;
 use sea_orm::DatabaseConnection;
 
+use crate::app::embed::EmbedTemplate;
+
 /// Bundles runtime resources used by the application event loop.
 pub(super) struct Connection {
     /// PostgreSQL connection used for bans lookup.
@@ -17,4 +19,6 @@ pub(super) struct Connection {
     pub(super) discord_shard_manager: Arc<serenity::ShardManager>,
     /// Background Discord client task.
     pub(super) discord_task: tokio::task::JoinHandle<()>,
+    /// Message template used to format newsletter announcements.
+    pub(super) embed_template: EmbedTemplate,
 }
