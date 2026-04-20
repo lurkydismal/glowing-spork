@@ -2,7 +2,9 @@
 # Export a Rust compiler flag for all recipes in this Justfile.
 # `-C target-cpu=native` tells rustc to optimize for the current CPU.
 
-export RUSTFLAGS := '-C target-cpu=native'
+export CC := 'clang'
+export CXX := 'clang++'
+export RUSTFLAGS := '-C target-cpu=native -C linker=clang -C link-arg=-fuse-ld=mold'
 
 # Pick a target triple based on the host OS family.
 # `os_family()` returns `"unix"` or `"windows"`.
