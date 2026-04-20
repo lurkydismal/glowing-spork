@@ -74,10 +74,10 @@ pub(super) async fn start_discord_bot(
                 trace!("registering slash commands globally");
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
                 debug!("slash commands registered globally");
-                if let Some(sender) = http_sender.lock().expect("poisoned mutex").take() {
-                    if sender.send(ctx.http().clone()).is_err() {
-                        warn!("failed to send Discord HTTP handle to runtime receiver");
-                    }
+                if let Some(sender) = http_sender.lock().expect("poisoned mutex").take()
+                    && sender.send(ctx.http.clone()).is_err()
+                {
+                    warn!("failed to send Discord HTTP handle to runtime receiver");
                 }
                 Ok(DiscordData {
                     newsletter_db: db_for_setup,
