@@ -61,7 +61,7 @@ pub(crate) enum AppError {
         source: sea_orm::DbErr,
     },
 
-    #[error("failed to clear event for ban id {ban_id}")]
+    #[error("failed to clear event for ban id {ban_id}: {source}")]
     ClearEvent {
         ban_id: i32,
         #[source]
@@ -161,7 +161,7 @@ async fn get_ban_message_id(
 async fn clear_event(db: &sea_orm::DatabaseConnection, ban_id: i32) -> Result<(), sea_orm::DbErr> {
     db.execute(Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "DELETE FROM ban_events WHERE ban_id = ?",
+        "DELETE FROM ban_events WHERE ban_id = $1",
         vec![Value::Int(Some(ban_id))],
     ))
     .await?;
