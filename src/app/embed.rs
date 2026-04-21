@@ -2,7 +2,7 @@ use log::{debug, trace};
 use quick_xml::{Reader, events::Event};
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum EmbedTemplateError {
+pub(crate) enum EmbedTemplateError {
     #[error("invalid XML: {0}")]
     Xml(#[from] quick_xml::Error),
 
