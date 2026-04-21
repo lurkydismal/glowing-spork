@@ -58,6 +58,12 @@ async fn ensure_newsletter_schema(db: &DatabaseConnection) -> Result<(), DbErr> 
             .to_owned(),
     ))
     .await?;
+    db.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "CREATE TABLE IF NOT EXISTS sent_ban_hashes (ban_hash TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            .to_owned(),
+    ))
+    .await?;
     debug!("newsletter schema is ready in {:?}", started_at.elapsed());
     Ok(())
 }

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+blake3 = { version = "1.8.4", features = ["rayon", "zeroize", "digest"] }
 color-print = "0.3.7"
 dotenvy = "0.15.7"
 log = "0.4.29"

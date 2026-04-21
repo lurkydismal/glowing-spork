@@ -1,7 +1,8 @@
 use crate::entity::{self, prelude::Bans};
+use blake3::Hasher;
 use log::{debug, error, info, trace, warn};
 use poise::serenity_prelude as serenity;
-use sea_orm::EntityTrait as _;
+use sea_orm::{ConnectionTrait as _, DbBackend, EntityTrait as _, Statement, Value};
 use std::time::Instant;
 
 use crate::app::{
@@ -38,6 +39,13 @@ pub(crate) enum AppError {
 
     #[error("failed to wait for Ctrl+C")]
     CtrlC(#[from] std::io::Error),
+
+    #[error("failed to persist ban hash for ban id {ban_id}")]
+    BanHashStore {
+        ban_id: i32,
+        #[source]
+        source: sea_orm::DbErr,
+    },
 }
 
 fn reason_display(ban: &entity::bans::Model) -> String {
@@ -60,6 +68,40 @@ fn render_template_text(template: &str, ban: &entity::bans::Model) -> String {
         .replace("{duration_end}", &ban.duration_end.to_string())
         .replace("{reason}", &ban.reason)
         .replace("{reason_display}", &reason_display(ban))
+}
+
+fn hash_field(hasher: &mut Hasher, value: &[u8]) {
+    let len = value.len() as u64;
+    hasher.update(&len.to_le_bytes());
+    hasher.update(value);
+}
+
+fn compute_ban_hash(ban: &entity::bans::Model) -> String {
+    let mut hasher = Hasher::new();
+    hash_field(&mut hasher, ban.id.to_string().as_bytes());
+    hash_field(&mut hasher, ban.intruder.as_bytes());
+    hash_field(&mut hasher, ban.admin.as_bytes());
+    hash_field(&mut hasher, ban.r#type.as_bytes());
+    hash_field(&mut hasher, ban.round_id.to_string().as_bytes());
+    hash_field(&mut hasher, ban.server.as_bytes());
+    hash_field(&mut hasher, ban.duration_end.to_string().as_bytes());
+    hash_field(&mut hasher, ban.reason.as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+async fn record_ban_hash_if_new(
+    newsletter_db: &sea_orm::DatabaseConnection,
+    ban: &entity::bans::Model,
+) -> Result<bool, sea_orm::DbErr> {
+    let ban_hash = compute_ban_hash(ban);
+    let result = newsletter_db
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "INSERT OR IGNORE INTO sent_ban_hashes (ban_hash) VALUES (?)",
+            vec![Value::String(Some(Box::new(ban_hash)))],
+        ))
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Formats a rich ban announcement embed for Discord newsletters.
@@ -180,6 +222,13 @@ pub(crate) async fn run() -> Result<(), AppError> {
                         AppError::BanNotFound { ban_id }
                     })?;
                 info!("new ban: {:#?}", ban);
+                let is_new = record_ban_hash_if_new(&connection.newsletter_db, &ban)
+                    .await
+                    .map_err(|source| AppError::BanHashStore { ban_id, source })?;
+                if !is_new {
+                    info!("duplicate ban {} detected from hash table; skipping broadcast", ban_id);
+                    continue;
+                }
                 broadcast_ban(
                     &connection.discord_http,
                     &connection.newsletter_db,
