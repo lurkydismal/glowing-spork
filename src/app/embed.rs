@@ -17,8 +17,16 @@ pub(super) struct EmbedTemplate {
     pub(super) title: String,
     /// Main message body shown in the embed description.
     pub(super) description: String,
+    /// Embed fields rendered below the description.
+    pub(super) lines: Vec<EmbedLine>,
     /// Embed color as a 24-bit RGB integer.
     pub(super) color: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct EmbedLine {
+    pub(super) title: String,
+    pub(super) value: String,
 }
 
 impl EmbedTemplate {
@@ -26,7 +34,17 @@ impl EmbedTemplate {
     pub(super) fn default_template() -> Self {
         Self {
             title: "🚨 New Ban №{id}".to_owned(),
-            description: "**Intruder:** `{intruder}`\n**Admin:** `{admin}`\n**Reason:** {reason_display}\n\n**Details**\n**Type:** `{type}`\n**Round:** `{round_id}`\n**Server:** `{server}`\n\n**Ends:** `{duration_end}`".to_owned(),
+            description:
+                "**Intruder:** `{intruder}`\n**Admin:** `{admin}`\n**Reason:** {reason_display}\n"
+                    .to_owned(),
+            lines: [
+                line(
+                    "Details",
+                    "**Type:** `{type}`\n**Round:** `{round_id}`\n**Server:** `{server}`",
+                ),
+                line("Ends", "`{duration_end}`"),
+            ]
+            .to_vec(),
             color: poise::serenity_prelude::Color::DARK_RED.0,
         }
     }
@@ -38,7 +56,7 @@ impl EmbedTemplate {
     /// - one optional `<title>` element
     /// - one optional `<description>` element
     /// - one optional `<color>` element (`#RRGGBB`, `0xRRGGBB`, or decimal)
-    /// - zero or more `<line>` elements
+    /// - zero or more `<line title=\"...\">value</line>` elements
     ///
     /// Placeholders in textual fields support `{id}`, `{intruder}`, `{admin}`, `{type}`,
     /// `{round_id}`, `{server}`, `{duration_end}`, `{reason}`, and `{reason_display}`.
@@ -50,6 +68,8 @@ impl EmbedTemplate {
     ///   <title>🚨 New Ban №{id}</title>
     ///   <color>#992D22</color>
     ///   <description>**Intruder:** `{intruder}`</description>
+    ///   <line title="Details">**Type:** `{type}`</line>
+    ///   <line title="Ends">`{duration_end}`</line>
     /// </embed>
     /// ```
     pub(super) fn from_xml(xml: &str) -> Result<Self, EmbedTemplateError> {
@@ -60,13 +80,30 @@ impl EmbedTemplate {
         let mut title: Option<String> = None;
         let mut description: Option<String> = None;
         let mut color: Option<String> = None;
-        let mut lines: Vec<String> = Vec::new();
+        let mut lines: Vec<EmbedLine> = Vec::new();
         let mut current_tag: Option<Vec<u8>> = None;
+        let mut current_line: Option<EmbedLine> = None;
 
         loop {
             match reader.read_event()? {
                 Event::Start(start) => {
-                    current_tag = Some(start.name().as_ref().to_vec());
+                    let tag = start.name().as_ref().to_vec();
+                    if tag.as_slice() == b"line" {
+                        let line_title = start
+                            .attributes()
+                            .filter_map(Result::ok)
+                            .find_map(|attr| {
+                                let key = attr.key.as_ref();
+                                if key == b"title" || key == b"name" {
+                                    Some(String::from_utf8_lossy(attr.value.as_ref()).into_owned())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "Details".to_owned());
+                        current_line = Some(line(&line_title, ""));
+                    }
+                    current_tag = Some(tag);
                 }
                 Event::Text(text) => {
                     if let Some(tag) = &current_tag {
@@ -76,13 +113,23 @@ impl EmbedTemplate {
                                 b"title" => title = Some(value),
                                 b"description" => description = Some(value),
                                 b"color" => color = Some(value),
-                                b"line" => lines.push(value),
+                                b"line" => {
+                                    if let Some(line) = &mut current_line {
+                                        line.value.push_str(&value);
+                                    }
+                                }
                                 _ => {}
                             }
                         }
                     }
                 }
-                Event::End(_) => {
+                Event::End(end) => {
+                    if end.name().as_ref() == b"line"
+                        && let Some(line) = current_line.take()
+                        && !line.value.is_empty()
+                    {
+                        lines.push(line);
+                    }
                     current_tag = None;
                 }
                 Event::Eof => break,
@@ -96,19 +143,28 @@ impl EmbedTemplate {
         }
         if let Some(configured_description) = description {
             template.description = configured_description;
-        } else if !lines.is_empty() {
-            template.description = lines.join("\n");
+        }
+        if !lines.is_empty() {
+            template.lines = lines;
         }
         if let Some(configured_color) = color {
             template.color = parse_color(&configured_color)?;
         }
 
         debug!(
-            "loaded embed template from XML (description len: {}, color: #{:06X})",
+            "loaded embed template from XML (description len: {}, lines: {}, color: #{:06X})",
             template.description.len(),
+            template.lines.len(),
             template.color
         );
         Ok(template)
+    }
+}
+
+fn line(title: &str, value: &str) -> EmbedLine {
+    EmbedLine {
+        title: title.to_owned(),
+        value: value.to_owned(),
     }
 }
 
