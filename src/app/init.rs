@@ -5,7 +5,7 @@ use std::{path::PathBuf, time::Instant};
 use crate::app::{
     db::db_connect,
     discord::start_discord_bot,
-    embed::EmbedTemplate,
+    embed::{EmbedTemplate, EmbedTemplateError},
     listener::{ListenerCreateError, listener_create},
     types::Connection,
 };
@@ -35,7 +35,7 @@ pub(crate) enum InitError {
     InvalidEmbedXml {
         path: PathBuf,
         #[source]
-        source: quick_xml::Error,
+        source: EmbedTemplateError,
     },
 
     #[error("failed to connect to database: {0}")]

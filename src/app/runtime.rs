@@ -2,7 +2,7 @@ use crate::entity::{self, prelude::Bans};
 use log::{debug, error, info, trace, warn};
 use poise::serenity_prelude as serenity;
 use sea_orm::EntityTrait as _;
-use std::{fmt::Write as _, time::Instant};
+use std::time::Instant;
 
 use crate::app::{
     db::close,
@@ -40,9 +40,17 @@ pub(crate) enum AppError {
     CtrlC(#[from] std::io::Error),
 }
 
-/// Expands a single template line by replacing known `{field}` placeholders.
-fn render_line(line_template: &str, ban: &entity::bans::Model) -> String {
-    line_template
+fn reason_display(ban: &entity::bans::Model) -> String {
+    if ban.reason.is_empty() {
+        "No reason provided".to_owned()
+    } else {
+        format!("`{}`", ban.reason)
+    }
+}
+
+/// Expands a template fragment by replacing known `{field}` placeholders.
+fn render_template_text(template: &str, ban: &entity::bans::Model) -> String {
+    template
         .replace("{id}", &ban.id.to_string())
         .replace("{intruder}", &ban.intruder)
         .replace("{admin}", &ban.admin)
@@ -51,28 +59,28 @@ fn render_line(line_template: &str, ban: &entity::bans::Model) -> String {
         .replace("{server}", &ban.server)
         .replace("{duration_end}", &ban.duration_end.to_string())
         .replace("{reason}", &ban.reason)
+        .replace("{reason_display}", &reason_display(ban))
 }
 
-/// Formats a detailed ban announcement for Discord newsletters.
-fn format_ban_message(template: &EmbedTemplate, ban: &entity::bans::Model) -> String {
+/// Formats a rich ban announcement embed for Discord newsletters.
+fn format_ban_embed(template: &EmbedTemplate, ban: &entity::bans::Model) -> serenity::CreateEmbed {
     let started_at = Instant::now();
     trace!(
-        "format_ban_message started at {started_at:?} for ban {}",
+        "format_ban_embed started at {started_at:?} for ban {}",
         ban.id
     );
 
-    let mut text = String::new();
-    let _ = writeln!(&mut text, "{}", template.title);
-    for line_template in &template.lines {
-        let _ = writeln!(&mut text, "{}", render_line(line_template, ban));
-    }
+    let embed = serenity::CreateEmbed::new()
+        .title(render_template_text(&template.title, ban))
+        .description(render_template_text(&template.description, ban))
+        .color(serenity::Color::new(template.color));
 
     debug!(
-        "formatted ban message for {} in {:?}",
+        "formatted ban embed for {} in {:?}",
         ban.id,
         started_at.elapsed()
     );
-    text
+    embed
 }
 
 /// Sends the latest ban information to every registered newsletter channel.
@@ -98,19 +106,19 @@ async fn broadcast_ban(
         return;
     }
 
-    let message = format_ban_message(template, ban);
+    let embed = format_ban_embed(template, ban);
     for channel_id in channels {
         debug!("sending ban {} to channel {}", ban.id, channel_id);
         if let Err(source) = serenity::ChannelId::new(channel_id)
-            .say(http, &message)
+            .send_message(http, serenity::CreateMessage::new().embed(embed.clone()))
             .await
         {
             error!(
-                "failed to send ban {} message to channel {}: {source}",
+                "failed to send ban {} embed to channel {}: {source}",
                 ban.id, channel_id
             );
         } else {
-            info!("sent ban {} message to channel {}", ban.id, channel_id);
+            info!("sent ban {} embed to channel {}", ban.id, channel_id);
         }
     }
     debug!("broadcast_ban finished in {:?}", started_at.elapsed());
