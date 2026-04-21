@@ -35,7 +35,7 @@ impl EmbedTemplate {
         Self {
             title: "🚨 New Ban №{id}".to_owned(),
             description:
-                "**Intruder:** `{intruder}`\n**Admin:** `{admin}`\n**Reason:** {reason_display}\n"
+                "**Intruder:** `{intruder}`\n**Admin:** `{admin}`\n**Reason:** `{reason_display}`\n"
                     .to_owned(),
             lines: [
                 line(
