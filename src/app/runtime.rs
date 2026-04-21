@@ -73,7 +73,7 @@ fn reason_display(ban: &entity::bans::Model) -> String {
     if ban.reason.is_empty() {
         "No reason provided".to_owned()
     } else {
-        format!("{}", ban.reason)
+        ban.reason.to_string()
     }
 }
 
