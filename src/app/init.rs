@@ -60,11 +60,85 @@ async fn ensure_newsletter_schema(db: &DatabaseConnection) -> Result<(), DbErr> 
     .await?;
     db.execute(Statement::from_string(
         DbBackend::Sqlite,
-        "CREATE TABLE IF NOT EXISTS sent_ban_hashes (ban_hash TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        "CREATE TABLE IF NOT EXISTS ban_messages (ban_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (ban_id, channel_id))"
             .to_owned(),
     ))
     .await?;
     debug!("newsletter schema is ready in {:?}", started_at.elapsed());
+    Ok(())
+}
+
+/// Ensures PostgreSQL objects for ban event delivery are present.
+async fn ensure_ban_events_schema(db: &DatabaseConnection) -> Result<(), DbErr> {
+    db.execute(Statement::from_string(
+        DbBackend::Postgres,
+        "DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ban_event_type') THEN
+                CREATE TYPE ban_event_type AS ENUM ('added', 'edited');
+            END IF;
+        END;
+        $$"
+        .to_owned(),
+    ))
+    .await?;
+
+    db.execute(Statement::from_string(
+        DbBackend::Postgres,
+        "CREATE TABLE IF NOT EXISTS ban_events (
+            ban_id INTEGER PRIMARY KEY,
+            event_type ban_event_type NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )"
+        .to_owned(),
+    ))
+    .await?;
+
+    db.execute(Statement::from_string(
+        DbBackend::Postgres,
+        "CREATE OR REPLACE FUNCTION notify_ban_events()
+        RETURNS TRIGGER
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            event_name ban_event_type;
+        BEGIN
+            event_name := CASE WHEN TG_OP = 'INSERT' THEN 'added'::ban_event_type ELSE 'edited'::ban_event_type END;
+            INSERT INTO ban_events (ban_id, event_type)
+            VALUES (NEW.id, event_name)
+            ON CONFLICT (ban_id) DO NOTHING;
+            IF event_name = 'added' THEN
+                PERFORM pg_notify('ban_added', NEW.id::text);
+            ELSE
+                PERFORM pg_notify('ban_edited', NEW.id::text);
+            END IF;
+            RETURN NEW;
+        END;
+        $$"
+            .to_owned(),
+    ))
+    .await?;
+
+    db.execute(Statement::from_string(
+        DbBackend::Postgres,
+        "DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_trigger
+                WHERE tgname = 'bans_notify_events_trigger'
+            ) THEN
+                CREATE TRIGGER bans_notify_events_trigger
+                AFTER INSERT OR UPDATE ON bans
+                FOR EACH ROW
+                EXECUTE FUNCTION notify_ban_events();
+            END IF;
+        END;
+        $$"
+        .to_owned(),
+    ))
+    .await?;
+
     Ok(())
 }
 
@@ -125,10 +199,16 @@ pub(super) async fn init() -> Result<Connection, InitError> {
 
     let embed_template = load_embed_template()?;
 
-    let events: Vec<String> = events.split_whitespace().map(str::to_owned).collect();
+    let mut events: Vec<String> = events.split_whitespace().map(str::to_owned).collect();
+    for channel in ["ban_added", "ban_edited"] {
+        if !events.iter().any(|event| event == channel) {
+            events.push(channel.to_owned());
+        }
+    }
     debug!("parsed {} event names", events.len());
 
     let db = db_connect(&url).await?;
+    ensure_ban_events_schema(&db).await?;
     let newsletter_db = db_connect(&newsletter_url).await?;
     if let Err(source) = ensure_newsletter_schema(&newsletter_db).await {
         error!("failed to prepare newsletter schema: {source}");
