@@ -34,9 +34,9 @@ run-release triple=triple:
 docker-pull:
     docker compose  pull --ignore-buildable
 
-# Start the app service and any dependencies needed by that service.
+# Start all services.
 docker-up-all:
-    just docker-up 'app'
+    just docker-up
 
 # Start one service in detached mode.
 docker-up image='postgres':
