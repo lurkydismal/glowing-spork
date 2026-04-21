@@ -74,6 +74,13 @@ fn format_ban_embed(template: &EmbedTemplate, ban: &entity::bans::Model) -> sere
         .title(render_template_text(&template.title, ban))
         .description(render_template_text(&template.description, ban))
         .color(serenity::Color::new(template.color));
+    let embed = template.lines.iter().fold(embed, |embed, line| {
+        embed.field(
+            render_template_text(&line.title, ban),
+            render_template_text(&line.value, ban),
+            false,
+        )
+    });
 
     debug!(
         "formatted ban embed for {} in {:?}",
