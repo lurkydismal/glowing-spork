@@ -87,7 +87,7 @@ See `.env.example` for a fully documented configuration template.
 ## Run
 
 ```bash
-cargo run
+just run-release
 ```
 
 ## Lint / checks
