@@ -2,7 +2,7 @@ use crate::entity::{self, prelude::Bans};
 use log::{debug, error, info, trace, warn};
 use poise::serenity_prelude as serenity;
 use sea_orm::{ConnectionTrait as _, DbBackend, EntityTrait as _, Statement, Value};
-use std::time::Instant;
+use std::{collections::HashSet, time::Instant};
 
 use crate::app::{
     db::close,
@@ -90,29 +90,65 @@ fn render_template_text(template: &str, ban: &entity::bans::Model, no_reason_tex
         .replace("{duration_end}", &ban.duration_end.to_string())
         .replace("{reason}", &ban.reason)
         .replace("{reason_display}", &reason_display(ban, no_reason_text))
+        .replace("\\n", "\n")
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BanEventType {
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum BanEventType {
     Added,
     Edited,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct BanEventSpec {
+    event_type: BanEventType,
+    channel: &'static str,
+    db_value: &'static str,
+}
+
+const BAN_EVENT_SPECS: [BanEventSpec; 2] = [
+    BanEventSpec {
+        event_type: BanEventType::Added,
+        channel: "ban_added",
+        db_value: "added",
+    },
+    BanEventSpec {
+        event_type: BanEventType::Edited,
+        channel: "ban_edited",
+        db_value: "edited",
+    },
+];
+
 impl BanEventType {
     fn from_channel(channel: &str) -> Option<Self> {
-        match channel {
-            "ban_added" => Some(Self::Added),
-            "ban_edited" => Some(Self::Edited),
-            _ => None,
-        }
+        BAN_EVENT_SPECS
+            .iter()
+            .find(|spec| spec.channel == channel)
+            .map(|spec| spec.event_type)
     }
 
     fn from_db_value(event: &str) -> Option<Self> {
-        match event {
-            "added" => Some(Self::Added),
-            "edited" => Some(Self::Edited),
-            _ => None,
-        }
+        BAN_EVENT_SPECS
+            .iter()
+            .find(|spec| spec.db_value == event)
+            .map(|spec| spec.event_type)
+    }
+
+    pub(super) fn listener_channels() -> Vec<&'static str> {
+        BAN_EVENT_SPECS.iter().map(|spec| spec.channel).collect()
+    }
+
+    pub(super) fn parse_enabled(value: &str) -> HashSet<Self> {
+        let configured_events: HashSet<&str> = value
+            .split([',', ' ', '\n', '\t'])
+            .map(str::trim)
+            .filter(|event| !event.is_empty())
+            .collect();
+        BAN_EVENT_SPECS
+            .iter()
+            .filter(|spec| configured_events.contains(spec.db_value))
+            .map(|spec| spec.event_type)
+            .collect()
     }
 }
 
@@ -408,6 +444,13 @@ pub(crate) async fn run() -> Result<(), AppError> {
                     );
                     continue;
                 };
+                if !connection.enabled_event_types.contains(&event_type) {
+                    debug!(
+                        "received {event_type:?} on `{}` but event is disabled by EVENT_NAMES, skipping",
+                        notif.channel()
+                    );
+                    continue;
+                }
                 let payload = notif.payload();
                 debug!("notification payload received");
                 let ban_id: i32 = payload.parse().map_err(|source| {

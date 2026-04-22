@@ -7,6 +7,7 @@ use crate::app::{
     discord::start_discord_bot,
     embed::{EmbedTemplate, EmbedTemplateError},
     listener::{ListenerCreateError, listener_create},
+    runtime::BanEventType,
     types::Connection,
 };
 
@@ -218,7 +219,7 @@ pub(super) async fn init() -> Result<Connection, InitError> {
     debug!("loaded environment file if present");
     let url = std::env::var("DATABASE_URL").map_err(InitError::MissingDatabaseUrl)?;
     debug!("DATABASE_URL found");
-    let events = std::env::var("EVENT_NAMES").map_err(InitError::MissingEventNames)?;
+    let event_names = std::env::var("EVENT_NAMES").map_err(InitError::MissingEventNames)?;
     debug!("EVENT_NAMES found");
     let discord_token = std::env::var("DISCORD_TOKEN").map_err(InitError::MissingDiscordToken)?;
     debug!("DISCORD_TOKEN found");
@@ -228,13 +229,12 @@ pub(super) async fn init() -> Result<Connection, InitError> {
 
     let embed_template = load_embed_template()?;
 
-    let mut events: Vec<String> = events.split_whitespace().map(str::to_owned).collect();
-    for channel in ["ban_added", "ban_edited"] {
-        if !events.iter().any(|event| event == channel) {
-            events.push(channel.to_owned());
-        }
-    }
-    debug!("parsed {} event names", events.len());
+    let enabled_event_types = BanEventType::parse_enabled(&event_names);
+    let listener_channels = BanEventType::listener_channels();
+    debug!(
+        "parsed {} enabled event names from EVENT_NAMES",
+        enabled_event_types.len()
+    );
 
     let db = db_connect(&url).await?;
     ensure_ban_events_schema(&db).await?;
@@ -244,7 +244,7 @@ pub(super) async fn init() -> Result<Connection, InitError> {
         return Err(source.into());
     }
 
-    let listener = listener_create(&url, events).await?;
+    let listener = listener_create(&url, listener_channels).await?;
     let discord = start_discord_bot(&discord_token, newsletter_db.clone()).await?;
 
     info!(
@@ -259,5 +259,6 @@ pub(super) async fn init() -> Result<Connection, InitError> {
         discord_shard_manager: discord.shard_manager,
         discord_task: discord.task,
         embed_template,
+        enabled_event_types,
     })
 }
