@@ -5,7 +5,7 @@ use poise::serenity_prelude as serenity;
 use sea_orm::DatabaseConnection;
 
 use crate::app::embed::EmbedTemplate;
-use crate::app::runtime::BanEventType;
+use crate::app::runtime::{BanEventType, BanSource};
 
 /// Bundles runtime resources used by the application event loop.
 pub(super) struct Connection {
@@ -23,6 +23,8 @@ pub(super) struct Connection {
     pub(super) discord_task: tokio::task::JoinHandle<()>,
     /// Message template used to format newsletter announcements.
     pub(super) embed_template: EmbedTemplate,
+    /// Source table and columns used to load ban rows.
+    pub(super) ban_source: BanSource,
     /// Ban events allowed to be processed from notifications.
     pub(super) enabled_event_types: HashSet<BanEventType>,
 }

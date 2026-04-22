@@ -7,7 +7,7 @@ use crate::app::{
     discord::start_discord_bot,
     embed::{EmbedTemplate, EmbedTemplateError},
     listener::{ListenerCreateError, listener_create},
-    runtime::BanEventType,
+    runtime::{BanEventType, BanSource},
     types::Connection,
 };
 
@@ -24,6 +24,9 @@ pub(crate) enum InitError {
 
     #[error("NEWSLETTER_DATABASE_URL is missing: {0}")]
     MissingNewsletterDatabaseUrl(#[source] std::env::VarError),
+
+    #[error("invalid SQL identifier in {field}: `{value}`")]
+    InvalidIdentifier { field: &'static str, value: String },
 
     #[error("failed to read embed XML file `{path}`: {source}")]
     ReadEmbedFile {
@@ -93,7 +96,16 @@ async fn ensure_newsletter_schema(db: &DatabaseConnection) -> Result<(), DbErr> 
 }
 
 /// Ensures PostgreSQL objects for ban event delivery are present.
-async fn ensure_ban_events_schema(db: &DatabaseConnection) -> Result<(), DbErr> {
+async fn ensure_ban_events_schema(
+    db: &DatabaseConnection,
+    ban_source: &BanSource,
+) -> Result<(), DbErr> {
+    let id_col = quote_identifier(&ban_source.id_col);
+    let table = quote_table_name(&ban_source.table);
+    let trigger_name = format!(
+        "{}_notify_events_trigger",
+        ban_source.table.replace('.', "_")
+    );
     db.execute(Statement::from_string(
         DbBackend::Postgres,
         "DO $$
@@ -120,7 +132,8 @@ async fn ensure_ban_events_schema(db: &DatabaseConnection) -> Result<(), DbErr> 
 
     db.execute(Statement::from_string(
         DbBackend::Postgres,
-        "CREATE OR REPLACE FUNCTION notify_ban_events()
+        format!(
+            "CREATE OR REPLACE FUNCTION notify_ban_events()
         RETURNS TRIGGER
         LANGUAGE plpgsql
         AS $$
@@ -135,46 +148,107 @@ async fn ensure_ban_events_schema(db: &DatabaseConnection) -> Result<(), DbErr> 
                 RETURN NEW;
             END IF;
             INSERT INTO ban_events (ban_id, event_type)
-            VALUES (NEW.id, event_name)
+            VALUES (NEW.{id_col}, event_name)
             ON CONFLICT (ban_id) DO NOTHING;
             IF event_name = 'added' THEN
-                PERFORM pg_notify('ban_added', NEW.id::text);
+                PERFORM pg_notify('ban_added', NEW.{id_col}::text);
             ELSE
-                PERFORM pg_notify('ban_edited', NEW.id::text);
+                PERFORM pg_notify('ban_edited', NEW.{id_col}::text);
             END IF;
             RETURN NEW;
         END;
         $$"
-        .to_owned(),
+        ),
     ))
     .await?;
 
     db.execute(Statement::from_string(
         DbBackend::Postgres,
-        "DO $$
+        format!(
+            "DO $$
         BEGIN
             IF NOT EXISTS (
                 SELECT 1
                 FROM pg_trigger
-                WHERE tgname = 'bans_notify_events_trigger'
+                WHERE tgname = '{trigger_name}'
             ) THEN
-                CREATE TRIGGER bans_notify_events_trigger
-                AFTER INSERT OR UPDATE ON bans
+                CREATE TRIGGER {trigger_name}
+                AFTER INSERT OR UPDATE ON {table}
                 FOR EACH ROW
                 EXECUTE FUNCTION notify_ban_events();
             END IF;
         END;
         $$"
-        .to_owned(),
+        ),
     ))
     .await?;
 
     Ok(())
 }
 
+fn validate_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+fn quote_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn quote_table_name(table: &str) -> String {
+    table
+        .split('.')
+        .map(quote_identifier)
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn read_env_or_default(key: &'static str, default: &'static str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_owned())
+}
+
+#[allow(clippy::result_large_err)]
+fn load_ban_source_from_env() -> Result<BanSource, InitError> {
+    let source = BanSource {
+        table: read_env_or_default("BANS_TABLE", "bans"),
+        id_col: read_env_or_default("BANS_COL_ID", "id"),
+        intruder_col: read_env_or_default("BANS_COL_INTRUDER", "intruder"),
+        admin_col: read_env_or_default("BANS_COL_ADMIN", "admin"),
+        kind_col: read_env_or_default("BANS_COL_TYPE", "type"),
+        round_id_col: read_env_or_default("BANS_COL_ROUND_ID", "round_id"),
+        server_col: read_env_or_default("BANS_COL_SERVER", "server"),
+        duration_end_col: read_env_or_default("BANS_COL_DURATION_END", "duration_end"),
+        reason_col: read_env_or_default("BANS_COL_REASON", "reason"),
+    };
+
+    for (field, value) in [
+        ("BANS_TABLE", source.table.as_str()),
+        ("BANS_COL_ID", source.id_col.as_str()),
+        ("BANS_COL_INTRUDER", source.intruder_col.as_str()),
+        ("BANS_COL_ADMIN", source.admin_col.as_str()),
+        ("BANS_COL_TYPE", source.kind_col.as_str()),
+        ("BANS_COL_ROUND_ID", source.round_id_col.as_str()),
+        ("BANS_COL_SERVER", source.server_col.as_str()),
+        ("BANS_COL_DURATION_END", source.duration_end_col.as_str()),
+        ("BANS_COL_REASON", source.reason_col.as_str()),
+    ] {
+        if !validate_identifier(value) {
+            return Err(InitError::InvalidIdentifier {
+                field,
+                value: value.to_owned(),
+            });
+        }
+    }
+
+    Ok(source)
+}
+
 /// Loads and validates the embed XML template from the `EMBED_FILE` environment variable.
 ///
 /// Falls back to the default template when `EMBED_FILE` is not set.
+#[allow(clippy::result_large_err)]
 fn load_embed_template() -> Result<EmbedTemplate, InitError> {
     let started_at = Instant::now();
     trace!("load_embed_template started at {started_at:?}");
@@ -226,6 +300,8 @@ pub(super) async fn init() -> Result<Connection, InitError> {
     let newsletter_url = std::env::var("NEWSLETTER_DATABASE_URL")
         .map_err(InitError::MissingNewsletterDatabaseUrl)?;
     debug!("NEWSLETTER_DATABASE_URL found");
+    let ban_source = load_ban_source_from_env()?;
+    debug!("ban source table: {}", ban_source.table);
 
     let embed_template = load_embed_template()?;
 
@@ -237,7 +313,7 @@ pub(super) async fn init() -> Result<Connection, InitError> {
     );
 
     let db = db_connect(&url).await?;
-    ensure_ban_events_schema(&db).await?;
+    ensure_ban_events_schema(&db, &ban_source).await?;
     let newsletter_db = db_connect(&newsletter_url).await?;
     if let Err(source) = ensure_newsletter_schema(&newsletter_db).await {
         error!("failed to prepare newsletter schema: {source}");
@@ -259,6 +335,7 @@ pub(super) async fn init() -> Result<Connection, InitError> {
         discord_shard_manager: discord.shard_manager,
         discord_task: discord.task,
         embed_template,
+        ban_source,
         enabled_event_types,
     })
 }

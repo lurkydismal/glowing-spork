@@ -1,8 +1,8 @@
-use crate::entity::{self, prelude::Bans};
 use log::{debug, error, info, trace, warn};
 use poise::serenity_prelude as serenity;
-use sea_orm::{ConnectionTrait as _, DbBackend, EntityTrait as _, Statement, Value};
+use sea_orm::{ConnectionTrait as _, DbBackend, Statement, Value};
 use std::{collections::HashSet, time::Instant};
+use tokio::task::JoinSet;
 
 use crate::app::{
     db::close,
@@ -69,8 +69,33 @@ pub(crate) enum AppError {
     },
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct BanSource {
+    pub(super) table: String,
+    pub(super) id_col: String,
+    pub(super) intruder_col: String,
+    pub(super) admin_col: String,
+    pub(super) kind_col: String,
+    pub(super) round_id_col: String,
+    pub(super) server_col: String,
+    pub(super) duration_end_col: String,
+    pub(super) reason_col: String,
+}
+
+#[derive(Clone, Debug)]
+struct BanRecord {
+    id: i32,
+    intruder: String,
+    admin: String,
+    kind: String,
+    round_id: i32,
+    server: String,
+    duration_end: String,
+    reason: String,
+}
+
 /// Returns a localized fallback when the ban reason is not set.
-fn reason_display(ban: &entity::bans::Model, no_reason_text: &str) -> String {
+fn reason_display(ban: &BanRecord, no_reason_text: &str) -> String {
     if ban.reason.is_empty() {
         no_reason_text.to_owned()
     } else {
@@ -79,12 +104,12 @@ fn reason_display(ban: &entity::bans::Model, no_reason_text: &str) -> String {
 }
 
 /// Expands a template fragment by replacing known `{field}` placeholders.
-fn render_template_text(template: &str, ban: &entity::bans::Model, no_reason_text: &str) -> String {
+fn render_template_text(template: &str, ban: &BanRecord, no_reason_text: &str) -> String {
     template
         .replace("{id}", &ban.id.to_string())
         .replace("{intruder}", &ban.intruder)
         .replace("{admin}", &ban.admin)
-        .replace("{type}", &ban.r#type)
+        .replace("{type}", &ban.kind)
         .replace("{round_id}", &ban.round_id.to_string())
         .replace("{server}", &ban.server)
         .replace("{duration_end}", &ban.duration_end.to_string())
@@ -230,7 +255,7 @@ async fn load_pending_events(
 /// Formats a rich ban announcement embed for Discord newsletters using locale preferences.
 fn format_ban_embed_for_locale(
     template: &EmbedTemplate,
-    ban: &entity::bans::Model,
+    ban: &BanRecord,
     channel_locale: Option<&str>,
     user_locale: Option<&str>,
     guild_locale: Option<&str>,
@@ -276,12 +301,94 @@ fn format_ban_embed_for_locale(
     embed
 }
 
+fn quoted_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn quoted_table_name(table: &str) -> String {
+    table
+        .split('.')
+        .map(quoted_identifier)
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+async fn load_ban_record(
+    db: &sea_orm::DatabaseConnection,
+    source: &BanSource,
+    ban_id: i32,
+) -> Result<Option<BanRecord>, AppError> {
+    let query = format!(
+        "SELECT
+            {id_col}::int4 AS id,
+            COALESCE({intruder_col}::text, '') AS intruder,
+            COALESCE({admin_col}::text, '') AS admin,
+            COALESCE({kind_col}::text, '') AS kind,
+            COALESCE({round_id_col}::int4, 0) AS round_id,
+            COALESCE({server_col}::text, '') AS server,
+            COALESCE({duration_end_col}::text, '') AS duration_end,
+            COALESCE({reason_col}::text, '') AS reason
+         FROM {table_name}
+         WHERE {id_col} = $1
+         LIMIT 1",
+        id_col = quoted_identifier(&source.id_col),
+        intruder_col = quoted_identifier(&source.intruder_col),
+        admin_col = quoted_identifier(&source.admin_col),
+        kind_col = quoted_identifier(&source.kind_col),
+        round_id_col = quoted_identifier(&source.round_id_col),
+        server_col = quoted_identifier(&source.server_col),
+        duration_end_col = quoted_identifier(&source.duration_end_col),
+        reason_col = quoted_identifier(&source.reason_col),
+        table_name = quoted_table_name(&source.table),
+    );
+
+    let rows = db
+        .query_all(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            query,
+            vec![Value::Int(Some(ban_id))],
+        ))
+        .await
+        .map_err(|source| AppError::QueryBan { ban_id, source })?;
+
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+
+    Ok(Some(BanRecord {
+        id: row
+            .try_get_by_index(0)
+            .map_err(|source| AppError::QueryBan { ban_id, source })?,
+        intruder: row
+            .try_get_by_index(1)
+            .map_err(|source| AppError::QueryBan { ban_id, source })?,
+        admin: row
+            .try_get_by_index(2)
+            .map_err(|source| AppError::QueryBan { ban_id, source })?,
+        kind: row
+            .try_get_by_index(3)
+            .map_err(|source| AppError::QueryBan { ban_id, source })?,
+        round_id: row
+            .try_get_by_index(4)
+            .map_err(|source| AppError::QueryBan { ban_id, source })?,
+        server: row
+            .try_get_by_index(5)
+            .map_err(|source| AppError::QueryBan { ban_id, source })?,
+        duration_end: row
+            .try_get_by_index(6)
+            .map_err(|source| AppError::QueryBan { ban_id, source })?,
+        reason: row
+            .try_get_by_index(7)
+            .map_err(|source| AppError::QueryBan { ban_id, source })?,
+    }))
+}
+
 /// Sends the latest ban information to every registered newsletter channel.
 async fn handle_ban_event(
-    http: &serenity::Http,
+    http: std::sync::Arc<serenity::Http>,
     newsletter_db: &sea_orm::DatabaseConnection,
     template: &EmbedTemplate,
-    ban: &entity::bans::Model,
+    ban: &BanRecord,
     event_type: BanEventType,
 ) -> Result<(), AppError> {
     let started_at = Instant::now();
@@ -300,73 +407,90 @@ async fn handle_ban_event(
         return Ok(());
     }
 
+    let mut tasks = JoinSet::new();
     for channel in channels {
-        let channel_id = channel.channel_id;
-        let embed = format_ban_embed_for_locale(
-            template,
-            ban,
-            channel.channel_locale.as_deref(),
-            channel.user_locale.as_deref(),
-            channel.guild_locale.as_deref(),
-        );
-        match event_type {
-            BanEventType::Added => {
-                debug!("sending new ban {} to channel {}", ban.id, channel_id);
-                match serenity::ChannelId::new(channel_id)
-                    .send_message(http, serenity::CreateMessage::new().embed(embed.clone()))
-                    .await
-                {
-                    Ok(message) => {
-                        save_ban_message(newsletter_db, ban.id, channel_id, message.id.get())
-                            .await
-                            .map_err(|source| AppError::SaveBanMessage {
-                                ban_id: ban.id,
-                                channel_id,
-                                source,
-                            })?;
-                        info!("sent ban {} embed to channel {}", ban.id, channel_id);
+        let http = http.clone();
+        let newsletter_db = newsletter_db.clone();
+        let template = template.clone();
+        let ban = ban.clone();
+        tasks.spawn(async move {
+            let channel_id = channel.channel_id;
+            let embed = format_ban_embed_for_locale(
+                &template,
+                &ban,
+                channel.channel_locale.as_deref(),
+                channel.user_locale.as_deref(),
+                channel.guild_locale.as_deref(),
+            );
+            match event_type {
+                BanEventType::Added => {
+                    debug!("sending new ban {} to channel {}", ban.id, channel_id);
+                    match serenity::ChannelId::new(channel_id)
+                        .send_message(&http, serenity::CreateMessage::new().embed(embed.clone()))
+                        .await
+                    {
+                        Ok(message) => {
+                            save_ban_message(&newsletter_db, ban.id, channel_id, message.id.get())
+                                .await
+                                .map_err(|source| AppError::SaveBanMessage {
+                                    ban_id: ban.id,
+                                    channel_id,
+                                    source,
+                                })?;
+                            info!("sent ban {} embed to channel {}", ban.id, channel_id);
+                        }
+                        Err(source) => error!(
+                            "failed to send ban {} embed to channel {}: {source}",
+                            ban.id, channel_id
+                        ),
                     }
-                    Err(source) => error!(
-                        "failed to send ban {} embed to channel {}: {source}",
-                        ban.id, channel_id
-                    ),
                 }
-            }
-            BanEventType::Edited => {
-                let Some(message_id) = get_ban_message_id(newsletter_db, ban.id, channel_id)
-                    .await
-                    .map_err(|source| AppError::LoadBanMessage {
-                        ban_id: ban.id,
-                        channel_id,
-                        source,
-                    })?
-                else {
-                    warn!(
-                        "no existing message mapping for edited ban {} in channel {}",
-                        ban.id, channel_id
-                    );
-                    continue;
-                };
-                debug!(
-                    "editing ban {} message {} in channel {}",
-                    ban.id, message_id, channel_id
-                );
-                if let Err(source) = serenity::ChannelId::new(channel_id)
-                    .edit_message(
-                        http,
-                        serenity::MessageId::new(message_id),
-                        serenity::EditMessage::new().embed(embed.clone()),
-                    )
-                    .await
-                {
-                    error!(
-                        "failed to edit ban {} message {} in channel {}: {source}",
+                BanEventType::Edited => {
+                    let message_id = match get_ban_message_id(&newsletter_db, ban.id, channel_id)
+                        .await
+                        .map_err(|source| AppError::LoadBanMessage {
+                            ban_id: ban.id,
+                            channel_id,
+                            source,
+                        })? {
+                        Some(message_id) => message_id,
+                        None => {
+                            warn!(
+                                "no existing message mapping for edited ban {} in channel {}",
+                                ban.id, channel_id
+                            );
+                            return Ok(());
+                        }
+                    };
+                    debug!(
+                        "editing ban {} message {} in channel {}",
                         ban.id, message_id, channel_id
                     );
-                } else {
-                    info!("edited ban {} embed in channel {}", ban.id, channel_id);
+                    if let Err(source) = serenity::ChannelId::new(channel_id)
+                        .edit_message(
+                            &http,
+                            serenity::MessageId::new(message_id),
+                            serenity::EditMessage::new().embed(embed.clone()),
+                        )
+                        .await
+                    {
+                        error!(
+                            "failed to edit ban {} message {} in channel {}: {source}",
+                            ban.id, message_id, channel_id
+                        );
+                    } else {
+                        info!("edited ban {} embed in channel {}", ban.id, channel_id);
+                    }
                 }
             }
+            Ok::<(), AppError>(())
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(source)) => return Err(source),
+            Err(source) => error!("channel handler task failed to join: {source}"),
         }
     }
     debug!("broadcast_ban finished in {:?}", started_at.elapsed());
@@ -378,19 +502,14 @@ async fn process_ban_event(
     ban_id: i32,
     event_type: BanEventType,
 ) -> Result<(), AppError> {
-    let ban = Bans::find_by_id(ban_id)
-        .one(&connection.db)
-        .await
-        .map_err(|source| {
-            error!("database query failed for ban id {ban_id}");
-            AppError::QueryBan { ban_id, source }
-        })?
+    let ban = load_ban_record(&connection.db, &connection.ban_source, ban_id)
+        .await?
         .ok_or_else(|| {
             warn!("ban {ban_id} not found");
             AppError::BanNotFound { ban_id }
         })?;
     handle_ban_event(
-        &connection.discord_http,
+        connection.discord_http.clone(),
         &connection.newsletter_db,
         &connection.embed_template,
         &ban,
