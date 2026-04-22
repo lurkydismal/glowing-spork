@@ -260,6 +260,7 @@ async fn clear_event(db: &sea_orm::DatabaseConnection, ban_id: i32) -> Result<()
 
 async fn load_pending_events(
     db: &sea_orm::DatabaseConnection,
+    enabled_event_types: &HashSet<BanEventType>,
 ) -> Result<Vec<(i32, BanEventType)>, sea_orm::DbErr> {
     let rows = db
         .query_all(Statement::from_string(
@@ -272,7 +273,13 @@ async fn load_pending_events(
         let ban_id: i32 = row.try_get_by_index(0)?;
         let event_type: String = row.try_get_by_index(1)?;
         if let Some(event) = BanEventType::from_db_value(&event_type) {
-            events.push((ban_id, event));
+            if enabled_event_types.contains(&event) {
+                events.push((ban_id, event));
+            } else {
+                debug!(
+                    "pending event {event:?} for ban {ban_id} is disabled by EVENT_NAMES, skipping"
+                );
+            }
         } else {
             warn!("unknown pending event `{event_type}` for ban {ban_id}, skipping");
         }
@@ -563,7 +570,7 @@ pub(crate) async fn run() -> Result<(), AppError> {
 
     info!("starting main event loop");
     let mut connection = init().await?;
-    let pending_events = load_pending_events(&connection.db)
+    let pending_events = load_pending_events(&connection.db, &connection.enabled_event_types)
         .await
         .map_err(|source| AppError::LoadPendingEvents { source })?;
     for (ban_id, event_type) in pending_events {

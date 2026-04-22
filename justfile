@@ -69,8 +69,8 @@ docker-remove-unused-images:
     docker images -f "dangling=true" -q | xargs -r docker rmi
 
 # Generate SeaORM entity models from a database schema. Uses the provided database URL and schema name (defaults to "public"), and outputs compact-format entities into the `src/entity` directory.
-sea-generate-entity database_url schema='public':
-    sea generate entity --compact-format -u {{ database_url }} -s {{ schema }} -o src/entity
+# sea-generate-entity database_url schema='public':
+#     sea generate entity --compact-format -u {{ database_url }} -s {{ schema }} -o src/entity
 
 # Generate a cryptographically secure random alphanumeric token of length `N`. Uses `openssl rand` as the entropy source, encodes as Base64, removes padding and non-alphanumeric output, then retries until the result is exactly `N` characters using only `[A-Za-z0-9]`.
 generate-token length='32':

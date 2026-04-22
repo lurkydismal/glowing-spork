@@ -6,7 +6,6 @@
 //! 3. Exit with non-zero status when startup/runtime fails.
 
 mod app;
-mod entity;
 
 use log::{debug, error, info};
 
