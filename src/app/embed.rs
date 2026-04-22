@@ -40,11 +40,11 @@ impl EmbedTemplate {
     /// Creates a locale-aware fallback template used when no XML file is provided.
     pub(super) fn default_template_for(translations: Translations) -> Self {
         Self {
-            title: translations.default_title.to_owned(),
-            description: translations.default_description.to_owned(),
+            title: translations.default_title,
+            description: translations.default_description,
             lines: [
-                line(translations.details_title, translations.details_value),
-                line(translations.ends_title, "`{duration_end}`"),
+                line(&translations.details_title, &translations.details_value),
+                line(&translations.ends_title, "`{duration_end}`"),
             ]
             .to_vec(),
             color: poise::serenity_prelude::Color::DARK_RED.0,

@@ -92,12 +92,12 @@ async fn execute_registration_action(
             )
             .await?;
             info!("registered channel {channel_id} for newsletters");
-            ctx.say(translations.register_success).await?;
+            ctx.say(&translations.register_success).await?;
         }
         RegistrationAction::Unregister => {
             unregister_channel(&ctx.data().newsletter_db, channel_id).await?;
             info!("unregistered channel {channel_id} from newsletters");
-            ctx.say(translations.unregister_success).await?;
+            ctx.say(&translations.unregister_success).await?;
         }
     }
     debug!(

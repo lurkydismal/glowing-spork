@@ -205,7 +205,7 @@ fn format_ban_embed_for_locale(
     );
     let translations = crate::app::i18n::resolve_translations(user_locale, guild_locale);
     let localized_template = if template == &EmbedTemplate::default_template() {
-        EmbedTemplate::default_template_for(translations)
+        EmbedTemplate::default_template_for(translations.clone())
     } else {
         template.clone()
     };
@@ -214,18 +214,18 @@ fn format_ban_embed_for_locale(
         .title(render_template_text(
             &localized_template.title,
             ban,
-            translations.no_reason,
+            &translations.no_reason,
         ))
         .description(render_template_text(
             &localized_template.description,
             ban,
-            translations.no_reason,
+            &translations.no_reason,
         ))
         .color(serenity::Color::new(localized_template.color));
     let embed = localized_template.lines.iter().fold(embed, |embed, line| {
         embed.field(
-            render_template_text(&line.title, ban, translations.no_reason),
-            render_template_text(&line.value, ban, translations.no_reason),
+            render_template_text(&line.title, ban, &translations.no_reason),
+            render_template_text(&line.value, ban, &translations.no_reason),
             false,
         )
     });

@@ -1,35 +1,36 @@
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use log::warn;
+use serde::Deserialize;
+
 /// Translation bundle used for localized command responses and default embed text.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Deserialize)]
 pub(super) struct Translations {
     /// Message sent when a channel is registered for newsletters.
-    pub(super) register_success: &'static str,
+    pub(super) register_success: String,
     /// Message sent when a channel is unregistered from newsletters.
-    pub(super) unregister_success: &'static str,
+    pub(super) unregister_success: String,
     /// Default embed title.
-    pub(super) default_title: &'static str,
+    pub(super) default_title: String,
     /// Default embed description body.
-    pub(super) default_description: &'static str,
+    pub(super) default_description: String,
     /// Default details field title.
-    pub(super) details_title: &'static str,
+    pub(super) details_title: String,
     /// Default details field body.
-    pub(super) details_value: &'static str,
+    pub(super) details_value: String,
     /// Default field title for end date.
-    pub(super) ends_title: &'static str,
+    pub(super) ends_title: String,
     /// Default fallback text for missing ban reason.
-    pub(super) no_reason: &'static str,
+    pub(super) no_reason: String,
 }
 
-/// Builds a locale matcher expression with language and regional fallbacks.
-macro_rules! locale_match {
-    ($locale:expr, $($lang:literal => $translation:expr),+ $(,)?) => {{
-        match $locale {
-            $(
-                lang if lang.starts_with($lang) => $translation,
-            )+
-            _ => english(),
-        }
-    }};
+#[derive(Debug, Deserialize)]
+struct I18nFile {
+    locales: HashMap<String, Translations>,
 }
+
+static TRANSLATIONS: OnceLock<I18nFile> = OnceLock::new();
 
 /// Returns a translation set selected from user locale first, then guild locale.
 pub(super) fn resolve_translations(
@@ -37,16 +38,19 @@ pub(super) fn resolve_translations(
     guild_locale: Option<&str>,
 ) -> Translations {
     let locale = normalize_locale(user_locale).or_else(|| normalize_locale(guild_locale));
-    match locale {
-        Some(locale) => locale_match!(
-            locale,
-            "ru" => russian(),
-            "uk" => ukrainian(),
-            "es" => spanish(),
-            "de" => german()
-        ),
-        None => english(),
+    let store = TRANSLATIONS.get_or_init(load_translations);
+
+    if let Some(locale) = locale
+        && let Some(translations) = find_locale_translation(store, &locale)
+    {
+        return translations.clone();
     }
+
+    if let Some(english) = find_locale_translation(store, "en") {
+        return english.clone();
+    }
+
+    built_in_english()
 }
 
 /// Normalizes a locale value by trimming whitespace and converting to lowercase.
@@ -57,67 +61,67 @@ pub(super) fn normalize_locale(locale: Option<&str>) -> Option<String> {
         .map(|value| value.to_ascii_lowercase())
 }
 
-fn english() -> Translations {
-    Translations {
-        register_success: "✅ This channel is now registered for ban newsletters.",
-        unregister_success: "✅ This channel has been removed from ban newsletters.",
-        default_title: "🚨 New Ban №{id}",
-        default_description: "**Intruder:** `{intruder}`\n**Admin:** `{admin}`\n**Reason:** `{reason_display}`\n",
-        details_title: "Details",
-        details_value: "**Type:** `{type}`\n**Round:** `{round_id}`\n**Server:** `{server}`",
-        ends_title: "Ends",
-        no_reason: "No reason provided",
+fn find_locale_translation<'a>(store: &'a I18nFile, locale: &str) -> Option<&'a Translations> {
+    if let Some(exact) = store.locales.get(locale) {
+        return Some(exact);
+    }
+
+    store
+        .locales
+        .iter()
+        .find_map(|(key, value)| locale.starts_with(key).then_some(value))
+}
+
+fn load_translations() -> I18nFile {
+    let path = match std::env::var("I18_FILE") {
+        Ok(path) => path,
+        Err(error) => {
+            warn!("I18_FILE is not set: {error}. Falling back to built-in translations.");
+            return built_in_file();
+        }
+    };
+
+    if !path.ends_with(".jsonc") {
+        warn!("I18_FILE should point to a .jsonc file, got `{path}`. Attempting to parse anyway.");
+    }
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) => {
+            warn!("failed to read I18_FILE `{path}`: {error}. Using built-in translations.");
+            return built_in_file();
+        }
+    };
+
+    match json5::from_str::<I18nFile>(&content) {
+        Ok(file) => file,
+        Err(error) => {
+            warn!(
+                "failed to parse I18_FILE `{path}` as jsonc/json5: {error}. Using built-in translations."
+            );
+            built_in_file()
+        }
     }
 }
 
-fn russian() -> Translations {
-    Translations {
-        register_success: "✅ Этот канал теперь зарегистрирован для рассылки банов.",
-        unregister_success: "✅ Этот канал удалён из рассылки банов.",
-        default_title: "🚨 Новый бан №{id}",
-        default_description: "**Нарушитель:** `{intruder}`\n**Админ:** `{admin}`\n**Причина:** `{reason_display}`\n",
-        details_title: "Детали",
-        details_value: "**Тип:** `{type}`\n**Раунд:** `{round_id}`\n**Сервер:** `{server}`",
-        ends_title: "Окончание",
-        no_reason: "Причина не указана",
-    }
+fn built_in_file() -> I18nFile {
+    let mut locales = HashMap::new();
+    locales.insert("en".to_owned(), built_in_english());
+    I18nFile { locales }
 }
 
-fn ukrainian() -> Translations {
+fn built_in_english() -> Translations {
     Translations {
-        register_success: "✅ Цей канал тепер зареєстровано для розсилки банів.",
-        unregister_success: "✅ Цей канал видалено з розсилки банів.",
-        default_title: "🚨 Новий бан №{id}",
-        default_description: "**Порушник:** `{intruder}`\n**Адмін:** `{admin}`\n**Причина:** `{reason_display}`\n",
-        details_title: "Деталі",
-        details_value: "**Тип:** `{type}`\n**Раунд:** `{round_id}`\n**Сервер:** `{server}`",
-        ends_title: "Завершення",
-        no_reason: "Причину не вказано",
-    }
-}
-
-fn spanish() -> Translations {
-    Translations {
-        register_success: "✅ Este canal ahora está registrado para los boletines de baneos.",
-        unregister_success: "✅ Este canal fue eliminado de los boletines de baneos.",
-        default_title: "🚨 Nuevo baneo №{id}",
-        default_description: "**Infractor:** `{intruder}`\n**Admin:** `{admin}`\n**Motivo:** `{reason_display}`\n",
-        details_title: "Detalles",
-        details_value: "**Tipo:** `{type}`\n**Ronda:** `{round_id}`\n**Servidor:** `{server}`",
-        ends_title: "Finaliza",
-        no_reason: "No se proporcionó motivo",
-    }
-}
-
-fn german() -> Translations {
-    Translations {
-        register_success: "✅ Dieser Kanal ist jetzt für Bann-Newsletters registriert.",
-        unregister_success: "✅ Dieser Kanal wurde aus den Bann-Newsletters entfernt.",
-        default_title: "🚨 Neuer Bann №{id}",
-        default_description: "**Spieler:** `{intruder}`\n**Admin:** `{admin}`\n**Grund:** `{reason_display}`\n",
-        details_title: "Details",
-        details_value: "**Typ:** `{type}`\n**Runde:** `{round_id}`\n**Server:** `{server}`",
-        ends_title: "Endet",
-        no_reason: "Kein Grund angegeben",
+        register_success: "✅ This channel is now registered for ban newsletters.".to_owned(),
+        unregister_success: "✅ This channel has been removed from ban newsletters.".to_owned(),
+        default_title: "🚨 New Ban №{id}".to_owned(),
+        default_description:
+            "**Intruder:** `{intruder}`\n**Admin:** `{admin}`\n**Reason:** `{reason_display}`\n"
+                .to_owned(),
+        details_title: "Details".to_owned(),
+        details_value: "**Type:** `{type}`\n**Round:** `{round_id}`\n**Server:** `{server}`"
+            .to_owned(),
+        ends_title: "Ends".to_owned(),
+        no_reason: "No reason provided".to_owned(),
     }
 }
