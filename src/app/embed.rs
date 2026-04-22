@@ -1,6 +1,8 @@
 use log::{debug, trace};
 use quick_xml::{Reader, events::Event};
 
+use crate::app::i18n::Translations;
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum EmbedTemplateError {
     #[error("invalid XML: {0}")]
@@ -11,7 +13,7 @@ pub(crate) enum EmbedTemplateError {
 }
 
 /// Runtime configuration for building newsletter messages from an XML template.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct EmbedTemplate {
     /// Message title shown above the ban details.
     pub(super) title: String,
@@ -23,7 +25,7 @@ pub(super) struct EmbedTemplate {
     pub(super) color: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct EmbedLine {
     pub(super) title: String,
     pub(super) value: String,
@@ -32,17 +34,17 @@ pub(super) struct EmbedLine {
 impl EmbedTemplate {
     /// Creates a built-in fallback template used when no XML file is provided.
     pub(super) fn default_template() -> Self {
+        Self::default_template_for(crate::app::i18n::resolve_translations(None, None))
+    }
+
+    /// Creates a locale-aware fallback template used when no XML file is provided.
+    pub(super) fn default_template_for(translations: Translations) -> Self {
         Self {
-            title: "🚨 New Ban №{id}".to_owned(),
-            description:
-                "**Intruder:** `{intruder}`\n**Admin:** `{admin}`\n**Reason:** `{reason_display}`\n"
-                    .to_owned(),
+            title: translations.default_title.to_owned(),
+            description: translations.default_description.to_owned(),
             lines: [
-                line(
-                    "Details",
-                    "**Type:** `{type}`\n**Round:** `{round_id}`\n**Server:** `{server}`",
-                ),
-                line("Ends", "`{duration_end}`"),
+                line(translations.details_title, translations.details_value),
+                line(translations.ends_title, "`{duration_end}`"),
             ]
             .to_vec(),
             color: poise::serenity_prelude::Color::DARK_RED.0,

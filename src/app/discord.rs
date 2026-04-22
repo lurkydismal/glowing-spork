@@ -29,34 +29,102 @@ pub(super) struct DiscordRuntime {
 /// Poise command context type alias.
 type DiscordContext<'a> = poise::Context<'a, DiscordData, DiscordCommandError>;
 
+/// Newsletter channel registration with locale preferences collected from Discord interactions.
+#[derive(Clone, Debug)]
+pub(super) struct NewsletterChannel {
+    /// Discord channel ID that receives ban newsletter messages.
+    pub(super) channel_id: u64,
+    /// User locale from the interaction that registered the channel.
+    pub(super) user_locale: Option<String>,
+    /// Guild locale from the interaction that registered the channel.
+    pub(super) guild_locale: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RegistrationAction {
+    Register,
+    Unregister,
+}
+
+impl RegistrationAction {
+    fn log_verb(self) -> &'static str {
+        match self {
+            Self::Register => "register",
+            Self::Unregister => "unregister",
+        }
+    }
+}
+
 /// Registers the current channel in the SQLite newsletter table.
 #[poise::command(slash_command)]
 pub(super) async fn register(ctx: DiscordContext<'_>) -> Result<(), DiscordCommandError> {
-    let started_at = Instant::now();
-    trace!("register command invoked at {started_at:?}");
-    let channel_id = ctx.channel_id().get();
-    debug!("attempting to register channel id {channel_id}");
-    register_channel(&ctx.data().newsletter_db, channel_id).await?;
-    info!("registered channel {channel_id} for newsletters");
-    ctx.say("✅ This channel is now registered for ban newsletters.")
-        .await?;
-    debug!("register command finished in {:?}", started_at.elapsed());
-    Ok(())
+    execute_registration_action(ctx, RegistrationAction::Register).await
 }
 
 /// Removes the current channel from the SQLite newsletter table.
 #[poise::command(slash_command)]
 pub(super) async fn unregister(ctx: DiscordContext<'_>) -> Result<(), DiscordCommandError> {
+    execute_registration_action(ctx, RegistrationAction::Unregister).await
+}
+
+/// Executes a channel registration command while applying locale-aware confirmation text.
+async fn execute_registration_action(
+    ctx: DiscordContext<'_>,
+    action: RegistrationAction,
+) -> Result<(), DiscordCommandError> {
     let started_at = Instant::now();
-    trace!("unregister command invoked at {started_at:?}");
+    trace!("{} command invoked at {started_at:?}", action.log_verb());
     let channel_id = ctx.channel_id().get();
-    debug!("attempting to unregister channel id {channel_id}");
-    unregister_channel(&ctx.data().newsletter_db, channel_id).await?;
-    info!("unregistered channel {channel_id} from newsletters");
-    ctx.say("✅ This channel has been removed from ban newsletters.")
-        .await?;
-    debug!("unregister command finished in {:?}", started_at.elapsed());
+    debug!(
+        "attempting to {} channel id {channel_id}",
+        action.log_verb()
+    );
+    let (user_locale, guild_locale) = interaction_locales(&ctx).await;
+    let translations =
+        crate::app::i18n::resolve_translations(user_locale.as_deref(), guild_locale.as_deref());
+    match action {
+        RegistrationAction::Register => {
+            register_channel(
+                &ctx.data().newsletter_db,
+                channel_id,
+                &user_locale,
+                &guild_locale,
+            )
+            .await?;
+            info!("registered channel {channel_id} for newsletters");
+            ctx.say(translations.register_success).await?;
+        }
+        RegistrationAction::Unregister => {
+            unregister_channel(&ctx.data().newsletter_db, channel_id).await?;
+            info!("unregistered channel {channel_id} from newsletters");
+            ctx.say(translations.unregister_success).await?;
+        }
+    }
+    debug!(
+        "{} command finished in {:?}",
+        action.log_verb(),
+        started_at.elapsed()
+    );
     Ok(())
+}
+
+/// Extracts normalized user and guild locales from an interaction context.
+async fn interaction_locales(ctx: &DiscordContext<'_>) -> (Option<String>, Option<String>) {
+    let user_locale = crate::app::i18n::normalize_locale(ctx.locale());
+    let guild_locale = match ctx.guild_id() {
+        Some(guild_id) => match guild_id.to_partial_guild(ctx.serenity_context()).await {
+            Ok(guild) => crate::app::i18n::normalize_locale(Some(&guild.preferred_locale)),
+            Err(source) => {
+                warn!(
+                    "failed to fetch preferred locale for guild {}: {source}",
+                    guild_id
+                );
+                None
+            }
+        },
+        None => None,
+    };
+    (user_locale, guild_locale)
 }
 
 /// Starts the Discord bot, registers slash commands, and returns runtime handles.
@@ -127,13 +195,23 @@ pub(super) async fn start_discord_bot(
 pub(super) async fn register_channel(
     db: &DatabaseConnection,
     channel_id: u64,
+    user_locale: &Option<String>,
+    guild_locale: &Option<String>,
 ) -> Result<(), sea_orm::DbErr> {
     let started_at = Instant::now();
     trace!("register_channel started at {started_at:?} for {channel_id}");
     db.execute(Statement::from_sql_and_values(
         DbBackend::Sqlite,
-        "INSERT OR IGNORE INTO newsletter_channels (channel_id) VALUES (?)",
-        vec![Value::BigUnsigned(Some(channel_id))],
+        "INSERT INTO newsletter_channels (channel_id, user_locale, guild_locale)
+         VALUES (?, ?, ?)
+         ON CONFLICT (channel_id) DO UPDATE SET
+            user_locale = excluded.user_locale,
+            guild_locale = excluded.guild_locale",
+        vec![
+            Value::BigUnsigned(Some(channel_id)),
+            Value::String(user_locale.clone().map(Box::new)),
+            Value::String(guild_locale.clone().map(Box::new)),
+        ],
     ))
     .await?;
     debug!(
@@ -166,21 +244,27 @@ pub(super) async fn unregister_channel(
 /// Reads all registered channel IDs from SQLite.
 pub(super) async fn list_registered_channels(
     db: &DatabaseConnection,
-) -> Result<Vec<u64>, sea_orm::DbErr> {
+) -> Result<Vec<NewsletterChannel>, sea_orm::DbErr> {
     let started_at = Instant::now();
     trace!("list_registered_channels started at {started_at:?}");
     let rows = db
         .query_all(Statement::from_string(
             DbBackend::Sqlite,
-            "SELECT channel_id FROM newsletter_channels".to_owned(),
+            "SELECT channel_id, user_locale, guild_locale FROM newsletter_channels".to_owned(),
         ))
         .await?;
 
     let mut channels = Vec::with_capacity(rows.len());
     for row in rows {
         let value: i64 = row.try_get_by_index(0)?;
+        let user_locale: Option<String> = row.try_get_by_index(1)?;
+        let guild_locale: Option<String> = row.try_get_by_index(2)?;
         match u64::try_from(value) {
-            Ok(channel) => channels.push(channel),
+            Ok(channel) => channels.push(NewsletterChannel {
+                channel_id: channel,
+                user_locale: crate::app::i18n::normalize_locale(user_locale.as_deref()),
+                guild_locale: crate::app::i18n::normalize_locale(guild_locale.as_deref()),
+            }),
             Err(source) => warn!("skipping invalid channel id {value}: {source}"),
         }
     }

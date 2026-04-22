@@ -54,10 +54,26 @@ async fn ensure_newsletter_schema(db: &DatabaseConnection) -> Result<(), DbErr> 
     trace!("ensure_newsletter_schema started at {started_at:?}");
     db.execute(Statement::from_string(
         DbBackend::Sqlite,
-        "CREATE TABLE IF NOT EXISTS newsletter_channels (channel_id INTEGER PRIMARY KEY NOT NULL)"
-            .to_owned(),
+        "CREATE TABLE IF NOT EXISTS newsletter_channels (
+            channel_id INTEGER PRIMARY KEY NOT NULL,
+            user_locale TEXT,
+            guild_locale TEXT
+        )"
+        .to_owned(),
     ))
     .await?;
+    db.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "ALTER TABLE newsletter_channels ADD COLUMN user_locale TEXT".to_owned(),
+    ))
+    .await
+    .ok();
+    db.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "ALTER TABLE newsletter_channels ADD COLUMN guild_locale TEXT".to_owned(),
+    ))
+    .await
+    .ok();
     db.execute(Statement::from_string(
         DbBackend::Sqlite,
         "CREATE TABLE IF NOT EXISTS ban_messages (ban_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (ban_id, channel_id))"
@@ -103,7 +119,13 @@ async fn ensure_ban_events_schema(db: &DatabaseConnection) -> Result<(), DbErr> 
         DECLARE
             event_name ban_event_type;
         BEGIN
-            event_name := CASE WHEN TG_OP = 'INSERT' THEN 'added'::ban_event_type ELSE 'edited'::ban_event_type END;
+            IF TG_OP = 'INSERT' THEN
+                event_name := 'added'::ban_event_type;
+            ELSIF TG_OP = 'UPDATE' THEN
+                event_name := 'edited'::ban_event_type;
+            ELSE
+                RETURN NEW;
+            END IF;
             INSERT INTO ban_events (ban_id, event_type)
             VALUES (NEW.id, event_name)
             ON CONFLICT (ban_id) DO NOTHING;
@@ -115,7 +137,7 @@ async fn ensure_ban_events_schema(db: &DatabaseConnection) -> Result<(), DbErr> 
             RETURN NEW;
         END;
         $$"
-            .to_owned(),
+        .to_owned(),
     ))
     .await?;
 

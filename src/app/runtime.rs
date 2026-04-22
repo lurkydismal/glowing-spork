@@ -69,16 +69,17 @@ pub(crate) enum AppError {
     },
 }
 
-fn reason_display(ban: &entity::bans::Model) -> String {
+/// Returns a localized fallback when the ban reason is not set.
+fn reason_display(ban: &entity::bans::Model, no_reason_text: &str) -> String {
     if ban.reason.is_empty() {
-        "No reason provided".to_owned()
+        no_reason_text.to_owned()
     } else {
         ban.reason.to_string()
     }
 }
 
 /// Expands a template fragment by replacing known `{field}` placeholders.
-fn render_template_text(template: &str, ban: &entity::bans::Model) -> String {
+fn render_template_text(template: &str, ban: &entity::bans::Model, no_reason_text: &str) -> String {
     template
         .replace("{id}", &ban.id.to_string())
         .replace("{intruder}", &ban.intruder)
@@ -88,7 +89,7 @@ fn render_template_text(template: &str, ban: &entity::bans::Model) -> String {
         .replace("{server}", &ban.server)
         .replace("{duration_end}", &ban.duration_end.to_string())
         .replace("{reason}", &ban.reason)
-        .replace("{reason_display}", &reason_display(ban))
+        .replace("{reason_display}", &reason_display(ban, no_reason_text))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -190,22 +191,41 @@ async fn load_pending_events(
     Ok(events)
 }
 
-/// Formats a rich ban announcement embed for Discord newsletters.
-fn format_ban_embed(template: &EmbedTemplate, ban: &entity::bans::Model) -> serenity::CreateEmbed {
+/// Formats a rich ban announcement embed for Discord newsletters using locale preferences.
+fn format_ban_embed_for_locale(
+    template: &EmbedTemplate,
+    ban: &entity::bans::Model,
+    user_locale: Option<&str>,
+    guild_locale: Option<&str>,
+) -> serenity::CreateEmbed {
     let started_at = Instant::now();
     trace!(
         "format_ban_embed started at {started_at:?} for ban {}",
         ban.id
     );
+    let translations = crate::app::i18n::resolve_translations(user_locale, guild_locale);
+    let localized_template = if template == &EmbedTemplate::default_template() {
+        EmbedTemplate::default_template_for(translations)
+    } else {
+        template.clone()
+    };
 
     let embed = serenity::CreateEmbed::new()
-        .title(render_template_text(&template.title, ban))
-        .description(render_template_text(&template.description, ban))
-        .color(serenity::Color::new(template.color));
-    let embed = template.lines.iter().fold(embed, |embed, line| {
+        .title(render_template_text(
+            &localized_template.title,
+            ban,
+            translations.no_reason,
+        ))
+        .description(render_template_text(
+            &localized_template.description,
+            ban,
+            translations.no_reason,
+        ))
+        .color(serenity::Color::new(localized_template.color));
+    let embed = localized_template.lines.iter().fold(embed, |embed, line| {
         embed.field(
-            render_template_text(&line.title, ban),
-            render_template_text(&line.value, ban),
+            render_template_text(&line.title, ban, translations.no_reason),
+            render_template_text(&line.value, ban, translations.no_reason),
             false,
         )
     });
@@ -242,8 +262,14 @@ async fn handle_ban_event(
         return Ok(());
     }
 
-    let embed = format_ban_embed(template, ban);
-    for channel_id in channels {
+    for channel in channels {
+        let channel_id = channel.channel_id;
+        let embed = format_ban_embed_for_locale(
+            template,
+            ban,
+            channel.user_locale.as_deref(),
+            channel.guild_locale.as_deref(),
+        );
         match event_type {
             BanEventType::Added => {
                 debug!("sending new ban {} to channel {}", ban.id, channel_id);
@@ -373,7 +399,10 @@ pub(crate) async fn run() -> Result<(), AppError> {
                 let notif = notif?;
                 trace!("channel: {}", notif.channel());
                 let Some(event_type) = BanEventType::from_channel(notif.channel()) else {
-                    warn!("received notification on unexpected channel `{}`", notif.channel());
+                    warn!(
+                        "received notification on unsupported channel `{}`, ignoring",
+                        notif.channel()
+                    );
                     continue;
                 };
                 let payload = notif.payload();
