@@ -101,8 +101,10 @@ fn load_translations() -> I18nFile {
         }
     };
 
-    if !path.ends_with(".jsonc") {
-        warn!("I18_FILE should point to a .jsonc file, got `{path}`. Attempting to parse anyway.");
+    if !path.ends_with(".jsonc") && !path.ends_with(".json5") && !path.ends_with(".json") {
+        warn!(
+            "I18_FILE should point to a jsonc/json5/json file, got `{path}`. Attempting to parse anyway."
+        );
     }
 
     let content = match std::fs::read_to_string(&path) {
@@ -117,7 +119,7 @@ fn load_translations() -> I18nFile {
         Ok(file) => file,
         Err(error) => {
             warn!(
-                "failed to parse I18_FILE `{path}` as jsonc/json5: {error}. Using built-in translations."
+                "failed to parse I18_FILE `{path}` as jsonc/json5/json: {error}. Using built-in translations."
             );
             built_in_file()
         }
