@@ -1,3 +1,10 @@
+//! Binary entrypoint for the Discord ban newsletter service.
+//!
+//! # Flow
+//! 1. Initialize logging and runtime.
+//! 2. Call [`app::run`] to start listeners and Discord bot.
+//! 3. Exit with non-zero status when startup/runtime fails.
+
 mod app;
 mod entity;
 

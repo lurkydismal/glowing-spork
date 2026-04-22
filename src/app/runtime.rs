@@ -118,6 +118,16 @@ fn render_template_text(template: &str, ban: &BanRecord, no_reason_text: &str) -
         .replace("\\n", "\n")
 }
 
+/// Event variants supported by database notifications and backlog rows.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Runtime example
+/// let enabled = BanEventType::parse_enabled("ban_added,edited");
+/// assert!(enabled.contains(&BanEventType::Added));
+/// assert!(enabled.contains(&BanEventType::Edited));
+/// ```
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum BanEventType {
     Added,
@@ -163,15 +173,33 @@ impl BanEventType {
         BAN_EVENT_SPECS.iter().map(|spec| spec.channel).collect()
     }
 
+    /// Parses `EVENT_NAMES` into an enabled event set.
+    ///
+    /// Supports both notification channel names (`ban_added`) and enum values
+    /// (`added`) for backwards compatibility.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let channel_style = BanEventType::parse_enabled("ban_added");
+    /// assert!(channel_style.contains(&BanEventType::Added));
+    ///
+    /// let db_style = BanEventType::parse_enabled("edited");
+    /// assert!(db_style.contains(&BanEventType::Edited));
+    /// ```
     pub(super) fn parse_enabled(value: &str) -> HashSet<Self> {
-        let configured_events: HashSet<&str> = value
+        let configured_events: HashSet<String> = value
             .split([',', ' ', '\n', '\t'])
             .map(str::trim)
             .filter(|event| !event.is_empty())
+            .map(|event| event.to_ascii_lowercase())
             .collect();
         BAN_EVENT_SPECS
             .iter()
-            .filter(|spec| configured_events.contains(spec.db_value))
+            .filter(|spec| {
+                configured_events.contains(spec.db_value)
+                    || configured_events.contains(spec.channel)
+            })
             .map(|spec| spec.event_type)
             .collect()
     }
@@ -599,4 +627,23 @@ pub(crate) async fn run() -> Result<(), AppError> {
     close(&connection.db).await;
     debug!("run completed in {:?}", started_at.elapsed());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BanEventType;
+
+    #[test]
+    fn parse_enabled_accepts_notification_channel_names() {
+        let enabled = BanEventType::parse_enabled("ban_added");
+        assert!(enabled.contains(&BanEventType::Added));
+        assert!(!enabled.contains(&BanEventType::Edited));
+    }
+
+    #[test]
+    fn parse_enabled_accepts_enum_values_and_is_case_insensitive() {
+        let enabled = BanEventType::parse_enabled("Added, BAN_EDITED");
+        assert!(enabled.contains(&BanEventType::Added));
+        assert!(enabled.contains(&BanEventType::Edited));
+    }
 }

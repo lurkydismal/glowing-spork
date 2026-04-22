@@ -1,6 +1,10 @@
 use log::{debug, error, info, trace};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement};
-use std::{path::PathBuf, time::Instant};
+use std::{
+    io::{self, Write},
+    path::PathBuf,
+    time::Instant,
+};
 
 use crate::app::{
     db::db_connect,
@@ -50,6 +54,38 @@ pub(crate) enum InitError {
 
     #[error("failed to start discord bot: {0}")]
     Discord(#[from] poise::serenity_prelude::Error),
+
+    #[error("failed to prompt for schema creation: {0}")]
+    PromptIo(#[from] io::Error),
+
+    #[error("schema creation canceled by user for object `{object_name}`")]
+    SchemaCreationDeclined { object_name: String },
+}
+
+/// Prompt operator confirmation before creating a missing DB object.
+///
+/// This prompt can be skipped with `AUTO_CONFIRM_SCHEMA_CHANGES=true`.
+#[allow(clippy::result_large_err)]
+fn confirm_schema_create(object_name: &str) -> Result<(), InitError> {
+    if std::env::var("AUTO_CONFIRM_SCHEMA_CHANGES")
+        .is_ok_and(|value| value.eq_ignore_ascii_case("true") || value == "1")
+    {
+        debug!("AUTO_CONFIRM_SCHEMA_CHANGES=true; auto-approving creation of `{object_name}`");
+        return Ok(());
+    }
+
+    print!("Create missing database object `{object_name}`? [y/n]: ");
+    io::stdout().flush()?;
+
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        return Ok(());
+    }
+
+    Err(InitError::SchemaCreationDeclined {
+        object_name: object_name.to_owned(),
+    })
 }
 
 /// Ensures the SQLite table used by newsletter commands exists.
@@ -95,17 +131,86 @@ async fn ensure_newsletter_schema(db: &DatabaseConnection) -> Result<(), DbErr> 
     Ok(())
 }
 
+/// Ensures the SQLite table used by newsletter commands exists with user confirmation.
+async fn ensure_newsletter_schema_with_prompt(db: &DatabaseConnection) -> Result<(), InitError> {
+    let existing = db
+        .query_all(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='newsletter_channels'"
+                .to_owned(),
+        ))
+        .await?;
+    if existing.is_empty() {
+        confirm_schema_create("sqlite table newsletter_channels")?;
+    }
+
+    let existing = db
+        .query_all(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='ban_messages'".to_owned(),
+        ))
+        .await?;
+    if existing.is_empty() {
+        confirm_schema_create("sqlite table ban_messages")?;
+    }
+
+    ensure_newsletter_schema(db).await?;
+    Ok(())
+}
+
 /// Ensures PostgreSQL objects for ban event delivery are present.
 async fn ensure_ban_events_schema(
     db: &DatabaseConnection,
     ban_source: &BanSource,
-) -> Result<(), DbErr> {
+) -> Result<(), InitError> {
     let id_col = quote_identifier(&ban_source.id_col);
     let table = quote_table_name(&ban_source.table);
     let trigger_name = format!(
         "{}_notify_events_trigger",
         ban_source.table.replace('.', "_")
     );
+    let event_type_exists = db
+        .query_all(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT 1 FROM pg_type WHERE typname = 'ban_event_type'".to_owned(),
+        ))
+        .await?;
+    if event_type_exists.is_empty() {
+        confirm_schema_create("postgres enum ban_event_type")?;
+    }
+
+    let event_table_exists = db
+        .query_all(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT 1 FROM information_schema.tables
+             WHERE table_schema = 'public' AND table_name = 'ban_events'"
+                .to_owned(),
+        ))
+        .await?;
+    if event_table_exists.is_empty() {
+        confirm_schema_create("postgres table ban_events")?;
+    }
+
+    let event_fn_exists = db
+        .query_all(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT 1 FROM pg_proc WHERE proname = 'notify_ban_events'".to_owned(),
+        ))
+        .await?;
+    if event_fn_exists.is_empty() {
+        confirm_schema_create("postgres function notify_ban_events")?;
+    }
+
+    let trigger_exists = db
+        .query_all(Statement::from_string(
+            DbBackend::Postgres,
+            format!("SELECT 1 FROM pg_trigger WHERE tgname = '{trigger_name}'"),
+        ))
+        .await?;
+    if trigger_exists.is_empty() {
+        confirm_schema_create(&format!("postgres trigger {trigger_name}"))?;
+    }
+
     db.execute(Statement::from_string(
         DbBackend::Postgres,
         "DO $$
@@ -315,9 +420,12 @@ pub(super) async fn init() -> Result<Connection, InitError> {
     let db = db_connect(&url).await?;
     ensure_ban_events_schema(&db, &ban_source).await?;
     let newsletter_db = db_connect(&newsletter_url).await?;
-    if let Err(source) = ensure_newsletter_schema(&newsletter_db).await {
+    if let Err(source) = ensure_newsletter_schema_with_prompt(&newsletter_db).await {
         error!("failed to prepare newsletter schema: {source}");
-        return Err(source.into());
+        return Err(match source {
+            InitError::Db(source) => source.into(),
+            other => other,
+        });
     }
 
     let listener = listener_create(&url, listener_channels).await?;

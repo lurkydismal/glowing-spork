@@ -1,3 +1,5 @@
+//! Core application modules for runtime orchestration, DB access, and Discord integration.
+
 mod db;
 mod discord;
 mod embed;
