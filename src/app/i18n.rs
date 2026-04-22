@@ -11,6 +11,12 @@ pub(super) struct Translations {
     pub(super) register_success: String,
     /// Message sent when a channel is unregistered from newsletters.
     pub(super) unregister_success: String,
+    /// Message sent when a locale override is set for a channel.
+    pub(super) locale_set_success: String,
+    /// Message sent when locale override is set on a channel that is not registered.
+    pub(super) locale_set_requires_register: String,
+    /// Message sent when locale value is invalid.
+    pub(super) locale_set_invalid: String,
     /// Default embed title.
     pub(super) default_title: String,
     /// Default embed description body.
@@ -51,6 +57,20 @@ pub(super) fn resolve_translations(
     }
 
     built_in_english()
+}
+
+/// Returns all configured locale keys sorted alphabetically.
+pub(super) fn available_locales() -> Vec<String> {
+    let store = TRANSLATIONS.get_or_init(load_translations);
+    let mut locales: Vec<String> = store.locales.keys().cloned().collect();
+    locales.sort_unstable();
+    locales
+}
+
+/// Reports whether a locale key exists in the configured translation bundle.
+pub(super) fn is_supported_locale(locale: &str) -> bool {
+    let store = TRANSLATIONS.get_or_init(load_translations);
+    store.locales.contains_key(locale)
 }
 
 /// Normalizes a locale value by trimming whitespace and converting to lowercase.
@@ -114,6 +134,11 @@ fn built_in_english() -> Translations {
     Translations {
         register_success: "✅ This channel is now registered for ban newsletters.".to_owned(),
         unregister_success: "✅ This channel has been removed from ban newsletters.".to_owned(),
+        locale_set_success: "✅ This channel locale is now set to `{locale}`.".to_owned(),
+        locale_set_requires_register:
+            "⚠️ This channel is not registered yet. Run `/register` first.".to_owned(),
+        locale_set_invalid: "⚠️ Unsupported locale. Pick one from the autocomplete list."
+            .to_owned(),
         default_title: "🚨 New Ban №{id}".to_owned(),
         default_description:
             "**Intruder:** `{intruder}`\n**Admin:** `{admin}`\n**Reason:** `{reason_display}`\n"

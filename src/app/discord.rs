@@ -38,6 +38,8 @@ pub(super) struct NewsletterChannel {
     pub(super) user_locale: Option<String>,
     /// Guild locale from the interaction that registered the channel.
     pub(super) guild_locale: Option<String>,
+    /// Explicit locale override selected for this channel.
+    pub(super) channel_locale: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -65,6 +67,44 @@ pub(super) async fn register(ctx: DiscordContext<'_>) -> Result<(), DiscordComma
 #[poise::command(slash_command)]
 pub(super) async fn unregister(ctx: DiscordContext<'_>) -> Result<(), DiscordCommandError> {
     execute_registration_action(ctx, RegistrationAction::Unregister).await
+}
+
+/// Sets the newsletter locale override for the current channel.
+#[poise::command(slash_command)]
+pub(super) async fn locale(
+    ctx: DiscordContext<'_>,
+    #[description = "Locale code"]
+    #[autocomplete = "autocomplete_locale"]
+    locale: String,
+) -> Result<(), DiscordCommandError> {
+    let channel_id = ctx.channel_id().get();
+    let (user_locale, guild_locale) = interaction_locales(&ctx).await;
+    let translations =
+        crate::app::i18n::resolve_translations(user_locale.as_deref(), guild_locale.as_deref());
+    let Some(locale) = crate::app::i18n::normalize_locale(Some(&locale)) else {
+        ctx.say(&translations.locale_set_invalid).await?;
+        return Ok(());
+    };
+    if !crate::app::i18n::is_supported_locale(&locale) {
+        ctx.say(&translations.locale_set_invalid).await?;
+        return Ok(());
+    }
+    if set_channel_locale(&ctx.data().newsletter_db, channel_id, &locale).await? {
+        ctx.say(translations.locale_set_success.replace("{locale}", &locale))
+            .await?;
+    } else {
+        ctx.say(&translations.locale_set_requires_register).await?;
+    }
+    Ok(())
+}
+
+async fn autocomplete_locale(_: DiscordContext<'_>, partial: &str) -> Vec<String> {
+    let partial = partial.to_ascii_lowercase();
+    crate::app::i18n::available_locales()
+        .into_iter()
+        .filter(|locale| locale.contains(&partial))
+        .take(25)
+        .collect()
 }
 
 /// Executes a channel registration command while applying locale-aware confirmation text.
@@ -137,7 +177,7 @@ pub(super) async fn start_discord_bot(
     let (http_tx, http_rx) = oneshot::channel();
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![register(), unregister()],
+            commands: vec![register(), unregister(), locale()],
             ..Default::default()
         })
         .setup(move |ctx, ready, framework| {
@@ -206,7 +246,8 @@ pub(super) async fn register_channel(
          VALUES (?, ?, ?)
          ON CONFLICT (channel_id) DO UPDATE SET
             user_locale = excluded.user_locale,
-            guild_locale = excluded.guild_locale",
+            guild_locale = excluded.guild_locale,
+            channel_locale = newsletter_channels.channel_locale",
         vec![
             Value::BigUnsigned(Some(channel_id)),
             Value::String(user_locale.clone().map(Box::new)),
@@ -241,6 +282,27 @@ pub(super) async fn unregister_channel(
     Ok(())
 }
 
+/// Updates a channel locale override and returns true when the channel exists.
+pub(super) async fn set_channel_locale(
+    db: &DatabaseConnection,
+    channel_id: u64,
+    locale: &str,
+) -> Result<bool, sea_orm::DbErr> {
+    let result = db
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "UPDATE newsletter_channels
+             SET channel_locale = ?
+             WHERE channel_id = ?",
+            vec![
+                Value::String(Some(Box::new(locale.to_owned()))),
+                Value::BigUnsigned(Some(channel_id)),
+            ],
+        ))
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Reads all registered channel IDs from SQLite.
 pub(super) async fn list_registered_channels(
     db: &DatabaseConnection,
@@ -250,7 +312,8 @@ pub(super) async fn list_registered_channels(
     let rows = db
         .query_all(Statement::from_string(
             DbBackend::Sqlite,
-            "SELECT channel_id, user_locale, guild_locale FROM newsletter_channels".to_owned(),
+            "SELECT channel_id, user_locale, guild_locale, channel_locale FROM newsletter_channels"
+                .to_owned(),
         ))
         .await?;
 
@@ -259,11 +322,13 @@ pub(super) async fn list_registered_channels(
         let value: i64 = row.try_get_by_index(0)?;
         let user_locale: Option<String> = row.try_get_by_index(1)?;
         let guild_locale: Option<String> = row.try_get_by_index(2)?;
+        let channel_locale: Option<String> = row.try_get_by_index(3)?;
         match u64::try_from(value) {
             Ok(channel) => channels.push(NewsletterChannel {
                 channel_id: channel,
                 user_locale: crate::app::i18n::normalize_locale(user_locale.as_deref()),
                 guild_locale: crate::app::i18n::normalize_locale(guild_locale.as_deref()),
+                channel_locale: crate::app::i18n::normalize_locale(channel_locale.as_deref()),
             }),
             Err(source) => warn!("skipping invalid channel id {value}: {source}"),
         }

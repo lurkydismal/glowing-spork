@@ -57,7 +57,8 @@ async fn ensure_newsletter_schema(db: &DatabaseConnection) -> Result<(), DbErr> 
         "CREATE TABLE IF NOT EXISTS newsletter_channels (
             channel_id INTEGER PRIMARY KEY NOT NULL,
             user_locale TEXT,
-            guild_locale TEXT
+            guild_locale TEXT,
+            channel_locale TEXT
         )"
         .to_owned(),
     ))
@@ -71,6 +72,12 @@ async fn ensure_newsletter_schema(db: &DatabaseConnection) -> Result<(), DbErr> 
     db.execute(Statement::from_string(
         DbBackend::Sqlite,
         "ALTER TABLE newsletter_channels ADD COLUMN guild_locale TEXT".to_owned(),
+    ))
+    .await
+    .ok();
+    db.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "ALTER TABLE newsletter_channels ADD COLUMN channel_locale TEXT".to_owned(),
     ))
     .await
     .ok();

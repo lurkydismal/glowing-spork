@@ -4,6 +4,9 @@
     en: {
       register_success: "✅ This channel is now registered for ban newsletters.",
       unregister_success: "✅ This channel has been removed from ban newsletters.",
+      locale_set_success: "✅ This channel locale is now set to `{locale}`.",
+      locale_set_requires_register: "⚠️ This channel is not registered yet. Run `/register` first.",
+      locale_set_invalid: "⚠️ Unsupported locale. Pick one from the autocomplete list.",
       default_title: "🚨 New Ban №{id}",
       default_description: "**Intruder:** `{intruder}`\\n**Admin:** `{admin}`\\n**Reason:** `{reason_display}`\\n",
       details_title: "Details",
@@ -14,6 +17,9 @@
     ru: {
       register_success: "✅ Этот канал теперь зарегистрирован для рассылки банов.",
       unregister_success: "✅ Этот канал удалён из рассылки банов.",
+      locale_set_success: "✅ Язык этого канала теперь `{locale}`.",
+      locale_set_requires_register: "⚠️ Канал ещё не зарегистрирован. Сначала используйте `/register`.",
+      locale_set_invalid: "⚠️ Неподдерживаемая локаль. Выберите вариант из автодополнения.",
       default_title: "🚨 Новый бан №{id}",
       default_description: "**Нарушитель:** `{intruder}`\\n**Админ:** `{admin}`\\n**Причина:** `{reason_display}`\\n",
       details_title: "Детали",
@@ -24,6 +30,9 @@
     uk: {
       register_success: "✅ Цей канал тепер зареєстровано для розсилки банів.",
       unregister_success: "✅ Цей канал видалено з розсилки банів.",
+      locale_set_success: "✅ Локаль цього каналу тепер `{locale}`.",
+      locale_set_requires_register: "⚠️ Канал ще не зареєстровано. Спочатку використайте `/register`.",
+      locale_set_invalid: "⚠️ Непідтримувана локаль. Оберіть значення з автодоповнення.",
       default_title: "🚨 Новий бан №{id}",
       default_description: "**Порушник:** `{intruder}`\\n**Адмін:** `{admin}`\\n**Причина:** `{reason_display}`\\n",
       details_title: "Деталі",
@@ -34,6 +43,9 @@
     es: {
       register_success: "✅ Este canal ahora está registrado para los boletines de baneos.",
       unregister_success: "✅ Este canal fue eliminado de los boletines de baneos.",
+      locale_set_success: "✅ La configuración regional de este canal ahora es `{locale}`.",
+      locale_set_requires_register: "⚠️ Este canal aún no está registrado. Ejecuta `/register` primero.",
+      locale_set_invalid: "⚠️ Configuración regional no compatible. Elige una opción del autocompletado.",
       default_title: "🚨 Nuevo baneo №{id}",
       default_description: "**Infractor:** `{intruder}`\\n**Admin:** `{admin}`\\n**Motivo:** `{reason_display}`\\n",
       details_title: "Detalles",
@@ -44,6 +56,9 @@
     de: {
       register_success: "✅ Dieser Kanal ist jetzt für Bann-Newsletters registriert.",
       unregister_success: "✅ Dieser Kanal wurde aus den Bann-Newsletters entfernt.",
+      locale_set_success: "✅ Die Sprache dieses Kanals ist jetzt `{locale}`.",
+      locale_set_requires_register: "⚠️ Dieser Kanal ist noch nicht registriert. Nutze zuerst `/register`.",
+      locale_set_invalid: "⚠️ Nicht unterstützte Sprache. Wähle einen Vorschlag aus der Autovervollständigung.",
       default_title: "🚨 Neuer Bann №{id}",
       default_description: "**Spieler:** `{intruder}`\\n**Admin:** `{admin}`\\n**Grund:** `{reason_display}`\\n",
       details_title: "Details",

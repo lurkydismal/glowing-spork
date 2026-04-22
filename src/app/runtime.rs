@@ -195,6 +195,7 @@ async fn load_pending_events(
 fn format_ban_embed_for_locale(
     template: &EmbedTemplate,
     ban: &entity::bans::Model,
+    channel_locale: Option<&str>,
     user_locale: Option<&str>,
     guild_locale: Option<&str>,
 ) -> serenity::CreateEmbed {
@@ -203,7 +204,8 @@ fn format_ban_embed_for_locale(
         "format_ban_embed started at {started_at:?} for ban {}",
         ban.id
     );
-    let translations = crate::app::i18n::resolve_translations(user_locale, guild_locale);
+    let translations =
+        crate::app::i18n::resolve_translations(channel_locale.or(user_locale), guild_locale);
     let localized_template = if template == &EmbedTemplate::default_template() {
         EmbedTemplate::default_template_for(translations.clone())
     } else {
@@ -267,6 +269,7 @@ async fn handle_ban_event(
         let embed = format_ban_embed_for_locale(
             template,
             ban,
+            channel.channel_locale.as_deref(),
             channel.user_locale.as_deref(),
             channel.guild_locale.as_deref(),
         );
