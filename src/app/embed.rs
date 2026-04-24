@@ -17,8 +17,6 @@ pub(crate) enum EmbedTemplateError {
 pub(super) struct EmbedTemplate {
     /// Message title shown above the ban details.
     pub(super) title: String,
-    /// Main message body shown in the embed description.
-    pub(super) description: String,
     /// Embed fields rendered below the description.
     pub(super) lines: Vec<EmbedLine>,
     /// Embed color as a 24-bit RGB integer.
@@ -27,8 +25,18 @@ pub(super) struct EmbedTemplate {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct EmbedLine {
-    pub(super) title: String,
+    pub(super) title: Option<String>,
     pub(super) value: String,
+    /// Render title and value on one line in the field value body.
+    pub(super) inline: bool,
+    /// Render this field inline in Discord layout.
+    pub(super) field_inline: bool,
+    /// Parent group id when this line is inside `<group>`.
+    pub(super) group_id: Option<usize>,
+    /// Whether parent group direction is `row`.
+    pub(super) row_group: bool,
+    /// Explicit empty line separator (for `<br/>` between blocks).
+    pub(super) spacer: bool,
 }
 
 impl EmbedTemplate {
@@ -41,10 +49,34 @@ impl EmbedTemplate {
     pub(super) fn default_template_for(translations: Translations) -> Self {
         Self {
             title: translations.default_title,
-            description: translations.default_description,
             lines: [
-                line(&translations.details_title, &translations.details_value),
-                line(&translations.ends_title, "`{duration_end}`"),
+                line(
+                    Some("\u{200B}"),
+                    &translations.default_description,
+                    false,
+                    false,
+                    None,
+                    false,
+                    false,
+                ),
+                line(
+                    Some(&translations.details_title),
+                    &translations.details_value,
+                    false,
+                    true,
+                    None,
+                    false,
+                    false,
+                ),
+                line(
+                    Some(&translations.ends_title),
+                    "`{duration_end}`",
+                    false,
+                    true,
+                    None,
+                    false,
+                    false,
+                ),
             ]
             .to_vec(),
             color: poise::serenity_prelude::Color::DARK_RED.0,
@@ -56,9 +88,10 @@ impl EmbedTemplate {
     /// The expected structure is:
     /// - one `<embed>` root
     /// - one optional `<title>` element
-    /// - one optional `<description>` element
     /// - one optional `<color>` element (`#RRGGBB`, `0xRRGGBB`, or decimal)
-    /// - zero or more `<line title=\"...\">value</line>` elements
+    /// - zero or more `<line title=\"...\" inline=\"...\">value</line>` elements
+    /// - zero or more `<group direction=\"row|column\">...</group>` containers with `<line>` children
+    /// - `<br/>` or `<break/>` in textual fields to insert an empty newline
     ///
     /// Placeholders in textual fields support `{id}`, `{intruder}`, `{admin}`, `{type}`,
     /// `{round_id}`, `{server}`, `{duration_end}`, `{reason}`, and `{reason_display}`.
@@ -69,9 +102,11 @@ impl EmbedTemplate {
     /// <embed>
     ///   <title>🚨 New Ban №{id}</title>
     ///   <color>#992D22</color>
-    ///   <description>**Intruder:** `{intruder}`</description>
-    ///   <line title="Details">**Type:** `{type}`</line>
-    ///   <line title="Ends">`{duration_end}`</line>
+    ///   <line inline="true" title="Info">**Intruder:** `{intruder}`<br/>**Admin:** `{admin}`</line>
+    ///   <group direction="row">
+    ///     <line title="Details">**Type:** `{type}`</line>
+    ///     <line title="Ends" inline="true">`{duration_end}`</line>
+    ///   </group>
     /// </embed>
     /// ```
     pub(super) fn from_xml(xml: &str) -> Result<Self, EmbedTemplateError> {
@@ -80,32 +115,85 @@ impl EmbedTemplate {
         reader.config_mut().trim_text(true);
 
         let mut title: Option<String> = None;
-        let mut description: Option<String> = None;
         let mut color: Option<String> = None;
         let mut lines: Vec<EmbedLine> = Vec::new();
         let mut current_tag: Option<Vec<u8>> = None;
         let mut current_line: Option<EmbedLine> = None;
+        let mut group_stack: Vec<(usize, bool)> = Vec::new();
+        let mut next_group_id = 1usize;
 
         loop {
             match reader.read_event()? {
                 Event::Start(start) => {
                     let tag = start.name().as_ref().to_vec();
-                    if tag.as_slice() == b"line" {
-                        let line_title = start
+                    if tag.as_slice() == b"group" {
+                        let row_group = start
                             .attributes()
                             .filter_map(Result::ok)
                             .find_map(|attr| {
+                                (attr.key.as_ref() == b"direction").then(|| {
+                                    String::from_utf8_lossy(attr.value.as_ref()).into_owned()
+                                })
+                            })
+                            .map(|direction| !direction.eq_ignore_ascii_case("column"))
+                            .unwrap_or(true);
+                        group_stack.push((next_group_id, row_group));
+                        next_group_id += 1;
+                        continue;
+                    }
+                    if tag.as_slice() == b"br" || tag.as_slice() == b"break" {
+                        if current_tag.is_some() {
+                            append_break(&current_tag, &mut title, &mut current_line);
+                        } else {
+                            lines.push(spacer_line());
+                        }
+                        continue;
+                    }
+                    if tag.as_slice() == b"line" {
+                        let line_title =
+                            start.attributes().filter_map(Result::ok).find_map(|attr| {
                                 let key = attr.key.as_ref();
                                 if key == b"title" || key == b"name" {
                                     Some(String::from_utf8_lossy(attr.value.as_ref()).into_owned())
                                 } else {
                                     None
                                 }
+                            });
+                        let inline_value = start
+                            .attributes()
+                            .filter_map(Result::ok)
+                            .find_map(|attr| {
+                                (attr.key.as_ref() == b"inline").then(|| {
+                                    String::from_utf8_lossy(attr.value.as_ref()).into_owned()
+                                })
                             })
-                            .unwrap_or_else(|| "Details".to_owned());
-                        current_line = Some(line(&line_title, ""));
+                            .as_deref()
+                            .is_some_and(parse_bool);
+                        let (group_id, row_group) =
+                            group_stack.last().copied().unwrap_or((0, false));
+                        let group_id = (group_id != 0).then_some(group_id);
+                        let field_inline = row_group;
+                        current_line = Some(line(
+                            line_title.as_deref(),
+                            "",
+                            inline_value,
+                            field_inline,
+                            group_id,
+                            row_group,
+                            false,
+                        ));
                     }
                     current_tag = Some(tag);
+                }
+                Event::Empty(empty) => {
+                    let tag = empty.name().as_ref().to_vec();
+                    if tag.as_slice() == b"br" || tag.as_slice() == b"break" {
+                        if current_tag.is_some() {
+                            append_break(&current_tag, &mut title, &mut current_line);
+                        } else {
+                            lines.push(spacer_line());
+                        }
+                    }
                 }
                 Event::Text(text) => {
                     if let Some(tag) = &current_tag {
@@ -113,7 +201,6 @@ impl EmbedTemplate {
                         if !value.is_empty() {
                             match tag.as_slice() {
                                 b"title" => title = Some(value),
-                                b"description" => description = Some(value),
                                 b"color" => color = Some(value),
                                 b"line" => {
                                     if let Some(line) = &mut current_line {
@@ -126,6 +213,12 @@ impl EmbedTemplate {
                     }
                 }
                 Event::End(end) => {
+                    if end.name().as_ref() == b"br" || end.name().as_ref() == b"break" {
+                        continue;
+                    }
+                    if end.name().as_ref() == b"group" {
+                        group_stack.pop();
+                    }
                     if end.name().as_ref() == b"line"
                         && let Some(line) = current_line.take()
                         && !line.value.is_empty()
@@ -143,9 +236,6 @@ impl EmbedTemplate {
         if let Some(configured_title) = title {
             template.title = configured_title;
         }
-        if let Some(configured_description) = description {
-            template.description = configured_description;
-        }
         if !lines.is_empty() {
             template.lines = lines;
         }
@@ -154,8 +244,7 @@ impl EmbedTemplate {
         }
 
         debug!(
-            "loaded embed template from XML (description len: {}, lines: {}, color: #{:06X})",
-            template.description.len(),
+            "loaded embed template from XML (lines: {}, color: #{:06X})",
             template.lines.len(),
             template.color
         );
@@ -163,11 +252,53 @@ impl EmbedTemplate {
     }
 }
 
-fn line(title: &str, value: &str) -> EmbedLine {
+fn line(
+    title: Option<&str>,
+    value: &str,
+    inline: bool,
+    field_inline: bool,
+    group_id: Option<usize>,
+    row_group: bool,
+    spacer: bool,
+) -> EmbedLine {
     EmbedLine {
-        title: title.to_owned(),
+        title: title.map(ToOwned::to_owned),
         value: value.to_owned(),
+        inline,
+        field_inline,
+        group_id,
+        row_group,
+        spacer,
     }
+}
+
+fn spacer_line() -> EmbedLine {
+    line(None, "", false, false, None, false, true)
+}
+
+fn append_break(
+    current_tag: &Option<Vec<u8>>,
+    title: &mut Option<String>,
+    current_line: &mut Option<EmbedLine>,
+) {
+    if let Some(tag) = current_tag {
+        match tag.as_slice() {
+            b"title" => title.get_or_insert_with(String::new).push_str("\n\n"),
+            b"line" => {
+                if let Some(line) = current_line {
+                    line.value.push_str("\n\n");
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn parse_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn parse_color(value: &str) -> Result<u32, EmbedTemplateError> {

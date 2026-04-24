@@ -7,7 +7,7 @@ use tokio::task::JoinSet;
 use crate::app::{
     db::close,
     discord::list_registered_channels,
-    embed::EmbedTemplate,
+    embed::{EmbedLine, EmbedTemplate},
     init::{InitError, init},
 };
 
@@ -308,25 +308,66 @@ fn format_ban_embed_for_locale(
         template.clone()
     };
 
-    let embed = serenity::CreateEmbed::new()
+    let mut embed = serenity::CreateEmbed::new()
         .title(render_template_text(
             &localized_template.title,
             ban,
             &translations.no_reason,
         ))
-        .description(render_template_text(
-            &localized_template.description,
-            ban,
-            &translations.no_reason,
-        ))
         .color(serenity::Color::new(localized_template.color));
-    let embed = localized_template.lines.iter().fold(embed, |embed, line| {
-        embed.field(
-            render_template_text(&line.title, ban, &translations.no_reason),
-            render_template_text(&line.value, ban, &translations.no_reason),
-            false,
-        )
-    });
+    let mut compact_blocks: Vec<String> = Vec::new();
+    let mut idx = 0usize;
+    while idx < localized_template.lines.len() {
+        let line = &localized_template.lines[idx];
+        if line.spacer {
+            compact_blocks.push(String::new());
+            idx += 1;
+            continue;
+        }
+        if line.row_group
+            && let Some(group_id) = line.group_id
+        {
+            let mut group_lines = Vec::new();
+            while idx < localized_template.lines.len() {
+                let next = &localized_template.lines[idx];
+                if next.group_id != Some(group_id) {
+                    break;
+                }
+                group_lines.push(render_line_for_compact_group(
+                    next,
+                    ban,
+                    &translations.no_reason,
+                ));
+                idx += 1;
+            }
+            compact_blocks.push(group_lines.join("\n"));
+            continue;
+        }
+        if line.inline {
+            compact_blocks.push(render_line_for_compact_group(
+                line,
+                ban,
+                &translations.no_reason,
+            ));
+            idx += 1;
+            continue;
+        }
+        if line.group_id.is_none() && line.title.as_deref().is_none_or(str::is_empty) {
+            compact_blocks.push(render_line_for_compact_group(
+                line,
+                ban,
+                &translations.no_reason,
+            ));
+            idx += 1;
+            continue;
+        }
+        let (field_name, field_value) = render_line_as_field(line, ban, &translations.no_reason);
+        embed = embed.field(field_name, field_value, line.field_inline);
+        idx += 1;
+    }
+    if !compact_blocks.is_empty() {
+        embed = embed.description(compact_blocks.join("\n"));
+    }
 
     debug!(
         "formatted ban embed for {} in {:?}",
@@ -334,6 +375,50 @@ fn format_ban_embed_for_locale(
         started_at.elapsed()
     );
     embed
+}
+
+fn render_line_as_field(line: &EmbedLine, ban: &BanRecord, no_reason: &str) -> (String, String) {
+    let rendered_title = line
+        .title
+        .as_deref()
+        .map(|title| render_template_text(title, ban, no_reason))
+        .unwrap_or_default();
+    let rendered_value = render_template_text(&line.value, ban, no_reason);
+    if line.inline {
+        return (
+            "\u{200B}".to_owned(),
+            inline_text_with_bold_title(&rendered_title, &rendered_value),
+        );
+    }
+    let field_name = if rendered_title.trim().is_empty() {
+        "\u{200B}".to_owned()
+    } else {
+        rendered_title
+    };
+    (field_name, rendered_value)
+}
+
+fn render_line_for_compact_group(line: &EmbedLine, ban: &BanRecord, no_reason: &str) -> String {
+    let rendered_title = line
+        .title
+        .as_deref()
+        .map(|title| render_template_text(title, ban, no_reason))
+        .unwrap_or_default();
+    let rendered_value = render_template_text(&line.value, ban, no_reason);
+    if line.inline {
+        return inline_text_with_bold_title(&rendered_title, &rendered_value);
+    }
+    if rendered_title.trim().is_empty() {
+        return rendered_value;
+    }
+    format!("**{}**\n{}", rendered_title.trim(), rendered_value)
+}
+
+fn inline_text_with_bold_title(title: &str, value: &str) -> String {
+    if title.trim().is_empty() {
+        return value.to_owned();
+    }
+    format!("**{}** {}", title.trim(), value)
 }
 
 fn quoted_identifier(identifier: &str) -> String {
