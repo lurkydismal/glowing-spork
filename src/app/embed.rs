@@ -10,6 +10,12 @@ pub(crate) enum EmbedTemplateError {
 
     #[error("invalid embed color `{value}`")]
     InvalidColor { value: String },
+
+    #[error("`<footer>` may appear at most once")]
+    DuplicateFooter,
+
+    #[error("`<footer>` must be the last element in `<embed>`")]
+    FooterMustBeLast,
 }
 
 /// Runtime configuration for building newsletter messages from an XML template.
@@ -21,6 +27,8 @@ pub(super) struct EmbedTemplate {
     pub(super) lines: Vec<EmbedLine>,
     /// Embed color as a 24-bit RGB integer.
     pub(super) color: u32,
+    /// Optional footer shown at the very bottom of the embed.
+    pub(super) footer: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,6 +88,7 @@ impl EmbedTemplate {
             ]
             .to_vec(),
             color: poise::serenity_prelude::Color::DARK_RED.0,
+            footer: None,
         }
     }
 
@@ -91,10 +100,12 @@ impl EmbedTemplate {
     /// - one optional `<color>` element (`#RRGGBB`, `0xRRGGBB`, or decimal)
     /// - zero or more `<line title=\"...\" inline=\"...\">value</line>` elements
     /// - zero or more `<group direction=\"row|column\">...</group>` containers with `<line>` children
+    /// - one optional `<footer>` element, only once and as the final embed element
     /// - `<br/>` or `<break/>` in textual fields to insert an empty newline
     ///
     /// Placeholders in textual fields support `{id}`, `{intruder}`, `{admin}`, `{type}`,
-    /// `{round_id}`, `{server}`, `{duration_end}`, `{reason}`, and `{reason_display}`.
+    /// `{round_id}`, `{server}`, `{created_at}`, `{duration_end}`, `{date}`, `{time}`,
+    /// `{date_time}`, `{time_left}`, `{reason}`, and `{reason_display}`.
     ///
     /// # Example
     ///
@@ -116,16 +127,21 @@ impl EmbedTemplate {
 
         let mut title: Option<String> = None;
         let mut color: Option<String> = None;
+        let mut footer: Option<String> = None;
         let mut lines: Vec<EmbedLine> = Vec::new();
         let mut current_tag: Option<Vec<u8>> = None;
         let mut current_line: Option<EmbedLine> = None;
         let mut group_stack: Vec<(usize, bool)> = Vec::new();
         let mut next_group_id = 1usize;
+        let mut footer_closed = false;
 
         loop {
             match reader.read_event()? {
                 Event::Start(start) => {
                     let tag = start.name().as_ref().to_vec();
+                    if footer_closed {
+                        return Err(EmbedTemplateError::FooterMustBeLast);
+                    }
                     if tag.as_slice() == b"group" {
                         let row_group = start
                             .attributes()
@@ -183,10 +199,16 @@ impl EmbedTemplate {
                             false,
                         ));
                     }
+                    if tag.as_slice() == b"footer" && footer.is_some() {
+                        return Err(EmbedTemplateError::DuplicateFooter);
+                    }
                     current_tag = Some(tag);
                 }
                 Event::Empty(empty) => {
                     let tag = empty.name().as_ref().to_vec();
+                    if footer_closed {
+                        return Err(EmbedTemplateError::FooterMustBeLast);
+                    }
                     if tag.as_slice() == b"br" || tag.as_slice() == b"break" {
                         if current_tag.is_some() {
                             append_break(&current_tag, &mut title, &mut current_line);
@@ -202,6 +224,7 @@ impl EmbedTemplate {
                             match tag.as_slice() {
                                 b"title" => title = Some(value),
                                 b"color" => color = Some(value),
+                                b"footer" => footer = Some(value),
                                 b"line" => {
                                     if let Some(line) = &mut current_line {
                                         line.value.push_str(&value);
@@ -225,6 +248,9 @@ impl EmbedTemplate {
                     {
                         lines.push(line);
                     }
+                    if end.name().as_ref() == b"footer" {
+                        footer_closed = true;
+                    }
                     current_tag = None;
                 }
                 Event::Eof => break,
@@ -241,6 +267,11 @@ impl EmbedTemplate {
         }
         if let Some(configured_color) = color {
             template.color = parse_color(&configured_color)?;
+        }
+        if let Some(configured_footer) = footer
+            && !configured_footer.is_empty()
+        {
+            template.footer = Some(configured_footer);
         }
 
         debug!(

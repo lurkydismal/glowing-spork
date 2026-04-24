@@ -175,6 +175,8 @@ async fn ensure_ban_events_schema(
 ) -> Result<(), InitError> {
     let id_col = quote_identifier(&ban_source.id_col);
     let table = quote_table_name(&ban_source.table);
+    let created_at_col = quote_identifier(&ban_source.created_at_col);
+    let (source_schema, source_table) = split_schema_table(&ban_source.table);
     let trigger_name = format!(
         "{}_notify_events_trigger",
         ban_source.table.replace('.', "_")
@@ -221,6 +223,25 @@ async fn ensure_ban_events_schema(
         confirm_schema_create(&format!("postgres trigger {trigger_name}"))?;
     }
 
+    let created_at_exists = db
+        .query_all(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT 1 FROM information_schema.columns
+             WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+            vec![
+                source_schema.into(),
+                source_table.into(),
+                ban_source.created_at_col.as_str().into(),
+            ],
+        ))
+        .await?;
+    if created_at_exists.is_empty() {
+        confirm_schema_create(&format!(
+            "postgres column {}.{}.{} with default NOW()",
+            source_schema, source_table, ban_source.created_at_col
+        ))?;
+    }
+
     db.execute(Statement::from_string(
         DbBackend::Postgres,
         "DO $$
@@ -242,6 +263,15 @@ async fn ensure_ban_events_schema(
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )"
         .to_owned(),
+    ))
+    .await?;
+
+    db.execute(Statement::from_string(
+        DbBackend::Postgres,
+        format!(
+            "ALTER TABLE {table}
+             ADD COLUMN IF NOT EXISTS {created_at_col} TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        ),
     ))
     .await?;
 
@@ -320,6 +350,13 @@ fn quote_table_name(table: &str) -> String {
         .join(".")
 }
 
+fn split_schema_table(table: &str) -> (&str, &str) {
+    match table.split_once('.') {
+        Some((schema, table)) => (schema, table),
+        None => ("public", table),
+    }
+}
+
 fn read_env_or_default(key: &'static str, default: &'static str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
 }
@@ -334,6 +371,7 @@ fn load_ban_source_from_env() -> Result<BanSource, InitError> {
         kind_col: read_env_or_default("BANS_COL_TYPE", "type"),
         round_id_col: read_env_or_default("BANS_COL_ROUND_ID", "round_id"),
         server_col: read_env_or_default("BANS_COL_SERVER", "server"),
+        created_at_col: read_env_or_default("BANS_COL_CREATED_AT", "created_at"),
         duration_end_col: read_env_or_default("BANS_COL_DURATION_END", "duration_end"),
         reason_col: read_env_or_default("BANS_COL_REASON", "reason"),
     };
@@ -346,6 +384,7 @@ fn load_ban_source_from_env() -> Result<BanSource, InitError> {
         ("BANS_COL_TYPE", source.kind_col.as_str()),
         ("BANS_COL_ROUND_ID", source.round_id_col.as_str()),
         ("BANS_COL_SERVER", source.server_col.as_str()),
+        ("BANS_COL_CREATED_AT", source.created_at_col.as_str()),
         ("BANS_COL_DURATION_END", source.duration_end_col.as_str()),
         ("BANS_COL_REASON", source.reason_col.as_str()),
     ] {

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
 use log::{debug, error, info, trace, warn};
 use poise::serenity_prelude as serenity;
 use sea_orm::{ConnectionTrait as _, DbBackend, Statement, Value};
@@ -78,6 +79,7 @@ pub(super) struct BanSource {
     pub(super) kind_col: String,
     pub(super) round_id_col: String,
     pub(super) server_col: String,
+    pub(super) created_at_col: String,
     pub(super) duration_end_col: String,
     pub(super) reason_col: String,
 }
@@ -90,6 +92,7 @@ struct BanRecord {
     kind: String,
     round_id: i32,
     server: String,
+    created_at: String,
     duration_end: String,
     reason: String,
 }
@@ -103,8 +106,102 @@ fn reason_display(ban: &BanRecord, no_reason_text: &str) -> String {
     }
 }
 
+#[derive(Clone, Debug)]
+struct TimePlaceholders {
+    date: String,
+    time: String,
+    date_time: String,
+    time_left: String,
+}
+
+fn parse_duration_end(value: &str) -> Option<DateTime<Utc>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    if let Ok(dt) = DateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S%.f%#z") {
+        return Some(dt.with_timezone(&Utc));
+    }
+    if let Ok(dt) = NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S%.f") {
+        return Some(dt.and_utc());
+    }
+    if let Ok(dt) = NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S") {
+        return Some(dt.and_utc());
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
+        && let Some(dt) = date.and_hms_opt(0, 0, 0)
+    {
+        return Some(dt.and_utc());
+    }
+
+    None
+}
+
+fn format_time_left(duration: Duration) -> String {
+    if duration <= Duration::zero() {
+        return String::new();
+    }
+    let mut remaining_minutes = duration.num_minutes();
+    if remaining_minutes <= 0 {
+        return String::new();
+    }
+
+    const MINUTES_PER_HOUR: i64 = 60;
+    const MINUTES_PER_DAY: i64 = 24 * MINUTES_PER_HOUR;
+    const MINUTES_PER_WEEK: i64 = 7 * MINUTES_PER_DAY;
+    const MINUTES_PER_MONTH: i64 = 30 * MINUTES_PER_DAY;
+
+    let units = [
+        ("month", MINUTES_PER_MONTH),
+        ("week", MINUTES_PER_WEEK),
+        ("day", MINUTES_PER_DAY),
+        ("hour", MINUTES_PER_HOUR),
+        ("minute", 1),
+    ];
+
+    let mut parts = Vec::new();
+    for (name, unit_minutes) in units {
+        if remaining_minutes < unit_minutes {
+            continue;
+        }
+        let value = remaining_minutes / unit_minutes;
+        remaining_minutes %= unit_minutes;
+        let suffix = if value == 1 { "" } else { "s" };
+        parts.push(format!("{value} {name}{suffix}"));
+    }
+    parts.join(" ")
+}
+
+fn resolve_time_placeholders(created_at: &str, duration_end: &str) -> TimePlaceholders {
+    let created_at_dt = parse_duration_end(created_at);
+    let duration_end_dt = parse_duration_end(duration_end);
+    TimePlaceholders {
+        date: created_at_dt
+            .map(|dt| dt.format("%Y-%m-%d").to_string())
+            .unwrap_or_default(),
+        time: created_at_dt
+            .map(|dt| dt.format("%H:%M UTC").to_string())
+            .unwrap_or_default(),
+        date_time: created_at_dt
+            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_default(),
+        time_left: duration_end_dt
+            .map(|dt| format_time_left(dt - Utc::now()))
+            .unwrap_or_default(),
+    }
+}
+
 /// Expands a template fragment by replacing known `{field}` placeholders.
-fn render_template_text(template: &str, ban: &BanRecord, no_reason_text: &str) -> String {
+fn render_template_text(
+    template: &str,
+    ban: &BanRecord,
+    no_reason_text: &str,
+    time_placeholders: &TimePlaceholders,
+) -> String {
     template
         .replace("{id}", &ban.id.to_string())
         .replace("{intruder}", &ban.intruder)
@@ -112,7 +209,12 @@ fn render_template_text(template: &str, ban: &BanRecord, no_reason_text: &str) -
         .replace("{type}", &ban.kind)
         .replace("{round_id}", &ban.round_id.to_string())
         .replace("{server}", &ban.server)
+        .replace("{created_at}", &ban.created_at)
         .replace("{duration_end}", &ban.duration_end.to_string())
+        .replace("{date}", &time_placeholders.date)
+        .replace("{time}", &time_placeholders.time)
+        .replace("{date_time}", &time_placeholders.date_time)
+        .replace("{time_left}", &time_placeholders.time_left)
         .replace("{reason}", &ban.reason)
         .replace("{reason_display}", &reason_display(ban, no_reason_text))
         .replace("\\n", "\n")
@@ -307,12 +409,14 @@ fn format_ban_embed_for_locale(
     } else {
         template.clone()
     };
+    let time_placeholders = resolve_time_placeholders(&ban.created_at, &ban.duration_end);
 
     let mut embed = serenity::CreateEmbed::new()
         .title(render_template_text(
             &localized_template.title,
             ban,
             &translations.no_reason,
+            &time_placeholders,
         ))
         .color(serenity::Color::new(localized_template.color));
     let mut compact_blocks: Vec<String> = Vec::new();
@@ -337,6 +441,7 @@ fn format_ban_embed_for_locale(
                     next,
                     ban,
                     &translations.no_reason,
+                    &time_placeholders,
                 ));
                 idx += 1;
             }
@@ -348,6 +453,7 @@ fn format_ban_embed_for_locale(
                 line,
                 ban,
                 &translations.no_reason,
+                &time_placeholders,
             ));
             idx += 1;
             continue;
@@ -357,16 +463,29 @@ fn format_ban_embed_for_locale(
                 line,
                 ban,
                 &translations.no_reason,
+                &time_placeholders,
             ));
             idx += 1;
             continue;
         }
-        let (field_name, field_value) = render_line_as_field(line, ban, &translations.no_reason);
+        let (field_name, field_value) =
+            render_line_as_field(line, ban, &translations.no_reason, &time_placeholders);
         embed = embed.field(field_name, field_value, line.field_inline);
         idx += 1;
     }
     if !compact_blocks.is_empty() {
         embed = embed.description(compact_blocks.join("\n"));
+    }
+    if let Some(footer_text) = localized_template.footer.as_deref() {
+        let rendered_footer = render_template_text(
+            footer_text,
+            ban,
+            &translations.no_reason,
+            &time_placeholders,
+        );
+        if !rendered_footer.trim().is_empty() {
+            embed = embed.footer(serenity::CreateEmbedFooter::new(rendered_footer));
+        }
     }
 
     debug!(
@@ -377,13 +496,18 @@ fn format_ban_embed_for_locale(
     embed
 }
 
-fn render_line_as_field(line: &EmbedLine, ban: &BanRecord, no_reason: &str) -> (String, String) {
+fn render_line_as_field(
+    line: &EmbedLine,
+    ban: &BanRecord,
+    no_reason: &str,
+    time_placeholders: &TimePlaceholders,
+) -> (String, String) {
     let rendered_title = line
         .title
         .as_deref()
-        .map(|title| render_template_text(title, ban, no_reason))
+        .map(|title| render_template_text(title, ban, no_reason, time_placeholders))
         .unwrap_or_default();
-    let rendered_value = render_template_text(&line.value, ban, no_reason);
+    let rendered_value = render_template_text(&line.value, ban, no_reason, time_placeholders);
     if line.inline {
         return (
             "\u{200B}".to_owned(),
@@ -398,13 +522,18 @@ fn render_line_as_field(line: &EmbedLine, ban: &BanRecord, no_reason: &str) -> (
     (field_name, rendered_value)
 }
 
-fn render_line_for_compact_group(line: &EmbedLine, ban: &BanRecord, no_reason: &str) -> String {
+fn render_line_for_compact_group(
+    line: &EmbedLine,
+    ban: &BanRecord,
+    no_reason: &str,
+    time_placeholders: &TimePlaceholders,
+) -> String {
     let rendered_title = line
         .title
         .as_deref()
-        .map(|title| render_template_text(title, ban, no_reason))
+        .map(|title| render_template_text(title, ban, no_reason, time_placeholders))
         .unwrap_or_default();
-    let rendered_value = render_template_text(&line.value, ban, no_reason);
+    let rendered_value = render_template_text(&line.value, ban, no_reason, time_placeholders);
     if line.inline {
         return inline_text_with_bold_title(&rendered_title, &rendered_value);
     }
@@ -446,6 +575,7 @@ async fn load_ban_record(
             COALESCE({kind_col}::text, '') AS kind,
             COALESCE({round_id_col}::int4, 0) AS round_id,
             COALESCE({server_col}::text, '') AS server,
+            COALESCE({created_at_col}::text, '') AS created_at,
             COALESCE({duration_end_col}::text, '') AS duration_end,
             COALESCE({reason_col}::text, '') AS reason
          FROM {table_name}
@@ -457,6 +587,7 @@ async fn load_ban_record(
         kind_col = quoted_identifier(&source.kind_col),
         round_id_col = quoted_identifier(&source.round_id_col),
         server_col = quoted_identifier(&source.server_col),
+        created_at_col = quoted_identifier(&source.created_at_col),
         duration_end_col = quoted_identifier(&source.duration_end_col),
         reason_col = quoted_identifier(&source.reason_col),
         table_name = quoted_table_name(&source.table),
@@ -494,11 +625,14 @@ async fn load_ban_record(
         server: row
             .try_get_by_index(5)
             .map_err(|source| AppError::QueryBan { ban_id, source })?,
-        duration_end: row
+        created_at: row
             .try_get_by_index(6)
             .map_err(|source| AppError::QueryBan { ban_id, source })?,
-        reason: row
+        duration_end: row
             .try_get_by_index(7)
+            .map_err(|source| AppError::QueryBan { ban_id, source })?,
+        reason: row
+            .try_get_by_index(8)
             .map_err(|source| AppError::QueryBan { ban_id, source })?,
     }))
 }
