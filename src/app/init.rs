@@ -1,10 +1,13 @@
 use log::{debug, error, info, trace};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement};
 use std::{
     io::{self, Write},
     path::PathBuf,
+    sync::Arc,
     time::Instant,
 };
+use tokio::sync::RwLock;
 
 use crate::app::{
     db::db_connect,
@@ -44,6 +47,13 @@ pub(crate) enum InitError {
         path: PathBuf,
         #[source]
         source: EmbedTemplateError,
+    },
+
+    #[error("failed to watch embed XML file `{path}`: {source}")]
+    WatchEmbedFile {
+        path: PathBuf,
+        #[source]
+        source: notify::Error,
     },
 
     #[error("failed to connect to database: {0}")]
@@ -354,7 +364,7 @@ fn load_ban_source_from_env() -> Result<BanSource, InitError> {
 ///
 /// Falls back to the default template when `EMBED_FILE` is not set.
 #[allow(clippy::result_large_err)]
-fn load_embed_template() -> Result<EmbedTemplate, InitError> {
+fn load_embed_template() -> Result<(EmbedTemplate, Option<PathBuf>), InitError> {
     let started_at = Instant::now();
     trace!("load_embed_template started at {started_at:?}");
 
@@ -365,7 +375,7 @@ fn load_embed_template() -> Result<EmbedTemplate, InitError> {
                 "EMBED_FILE was not provided; using default template (loaded in {:?})",
                 started_at.elapsed()
             );
-            return Ok(EmbedTemplate::default_template());
+            return Ok((EmbedTemplate::default_template(), None));
         }
     };
 
@@ -375,14 +385,90 @@ fn load_embed_template() -> Result<EmbedTemplate, InitError> {
     })?;
 
     let template = EmbedTemplate::from_xml(&xml).map_err(|source| InitError::InvalidEmbedXml {
-        path: embed_path,
+        path: embed_path.clone(),
         source,
     })?;
     debug!(
         "loaded and validated EMBED_FILE in {:?}",
         started_at.elapsed()
     );
-    Ok(template)
+    Ok((template, Some(embed_path)))
+}
+
+#[allow(clippy::result_large_err)]
+fn start_embed_template_hot_reload(
+    embed_path: PathBuf,
+    embed_template: Arc<RwLock<EmbedTemplate>>,
+) -> Result<RecommendedWatcher, InitError> {
+    let watch_root = embed_path
+        .parent()
+        .map_or_else(|| embed_path.clone(), PathBuf::from);
+    let watched_file_name = embed_path.file_name().map(|name| name.to_owned());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut watcher = notify::recommended_watcher(move |result| {
+        if tx.send(result).is_err() {
+            debug!("embed reload event receiver dropped");
+        }
+    })
+    .map_err(|source| InitError::WatchEmbedFile {
+        path: embed_path.clone(),
+        source,
+    })?;
+
+    watcher
+        .watch(&watch_root, RecursiveMode::NonRecursive)
+        .map_err(|source| InitError::WatchEmbedFile {
+            path: embed_path.clone(),
+            source,
+        })?;
+    info!(
+        "enabled EMBED_FILE hot reload for {:?} (watching {:?})",
+        embed_path, watch_root
+    );
+
+    tokio::spawn(async move {
+        while let Some(result) = rx.recv().await {
+            match result {
+                Ok(event)
+                    if matches!(
+                        event.kind,
+                        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                    ) && event.paths.iter().any(|path| {
+                        path == &embed_path
+                            || (path.file_name().is_some()
+                                && watched_file_name
+                                    .as_ref()
+                                    .is_some_and(|name| path.file_name() == Some(name.as_ref())))
+                    }) =>
+                {
+                    match std::fs::read_to_string(&embed_path) {
+                        Ok(xml) => match EmbedTemplate::from_xml(&xml) {
+                            Ok(next_template) => {
+                                *embed_template.write().await = next_template;
+                                info!("reloaded EMBED_FILE template from {:?}", embed_path);
+                            }
+                            Err(source) => {
+                                error!(
+                                    "failed to parse reloaded EMBED_FILE {:?}: {source}",
+                                    embed_path
+                                );
+                            }
+                        },
+                        Err(source) => {
+                            error!(
+                                "failed to read reloaded EMBED_FILE {:?}: {source}",
+                                embed_path
+                            );
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(source) => error!("embed file watcher error for {:?}: {source}", embed_path),
+            }
+        }
+    });
+
+    Ok(watcher)
 }
 
 /// Sets up the environment and constructs the runtime connection bundle.
@@ -408,7 +494,15 @@ pub(super) async fn init() -> Result<Connection, InitError> {
     let ban_source = load_ban_source_from_env()?;
     debug!("ban source table: {}", ban_source.table);
 
-    let embed_template = load_embed_template()?;
+    let (embed_template, embed_path) = load_embed_template()?;
+    let embed_template = Arc::new(RwLock::new(embed_template));
+    let embed_template_watcher = match embed_path {
+        Some(path) => Some(start_embed_template_hot_reload(
+            path,
+            embed_template.clone(),
+        )?),
+        None => None,
+    };
 
     let enabled_event_types = BanEventType::parse_enabled(&event_names);
     let listener_channels = BanEventType::listener_channels();
@@ -443,6 +537,7 @@ pub(super) async fn init() -> Result<Connection, InitError> {
         discord_shard_manager: discord.shard_manager,
         discord_task: discord.task,
         embed_template,
+        embed_template_watcher,
         ban_source,
         enabled_event_types,
     })

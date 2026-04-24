@@ -1,8 +1,10 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use notify::RecommendedWatcher;
 use poise::serenity_prelude as serenity;
 use sea_orm::DatabaseConnection;
+use tokio::sync::RwLock;
 
 use crate::app::embed::EmbedTemplate;
 use crate::app::runtime::{BanEventType, BanSource};
@@ -22,7 +24,9 @@ pub(super) struct Connection {
     /// Background Discord client task.
     pub(super) discord_task: tokio::task::JoinHandle<()>,
     /// Message template used to format newsletter announcements.
-    pub(super) embed_template: EmbedTemplate,
+    pub(super) embed_template: Arc<RwLock<EmbedTemplate>>,
+    /// File watcher handle kept alive for EMBED_FILE hot reload.
+    pub(super) embed_template_watcher: Option<RecommendedWatcher>,
     /// Source table and columns used to load ban rows.
     pub(super) ban_source: BanSource,
     /// Ban events allowed to be processed from notifications.

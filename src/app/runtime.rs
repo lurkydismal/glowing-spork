@@ -543,10 +543,11 @@ async fn process_ban_event(
             warn!("ban {ban_id} not found");
             AppError::BanNotFound { ban_id }
         })?;
+    let template = connection.embed_template.read().await.clone();
     handle_ban_event(
         connection.discord_http.clone(),
         &connection.newsletter_db,
-        &connection.embed_template,
+        &template,
         &ban,
         event_type,
     )
