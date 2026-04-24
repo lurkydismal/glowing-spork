@@ -26,6 +26,7 @@ pub(super) struct Connection {
     /// Message template used to format newsletter announcements.
     pub(super) embed_template: Arc<RwLock<EmbedTemplate>>,
     /// File watcher handle kept alive for EMBED_FILE hot reload.
+    #[expect(dead_code)]
     pub(super) embed_template_watcher: Option<RecommendedWatcher>,
     /// Source table and columns used to load ban rows.
     pub(super) ban_source: BanSource,
