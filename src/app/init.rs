@@ -332,10 +332,50 @@ async fn ensure_ban_events_schema(
 }
 
 fn validate_identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    parse_env_column_mapping(value).is_some()
+}
+
+fn validate_plain_identifier(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn validate_table_name(value: &str) -> bool {
+    !value.is_empty() && value.split('.').all(validate_plain_identifier)
+}
+
+fn parse_env_column_mapping(value: &str) -> Option<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.matches("->").count() > 1 {
+        return None;
+    }
+
+    if let Some((local_key, relation)) = trimmed.split_once("->") {
+        if !validate_plain_identifier(local_key.trim()) {
+            return None;
+        }
+        let (table_and_remote, value_column) = relation.split_once("::")?;
+        let (table_name_raw, remote_key) = table_and_remote.rsplit_once('.')?;
+        let table_name = table_name_raw.trim().trim_matches('"');
+        if !validate_table_name(table_name) {
+            return None;
+        }
+        if !validate_plain_identifier(remote_key.trim()) {
+            return None;
+        }
+        if !validate_plain_identifier(value_column.trim()) {
+            return None;
+        }
+        return Some(());
+    }
+
+    if validate_plain_identifier(trimmed) {
+        return Some(());
+    }
+
+    None
 }
 
 fn quote_identifier(identifier: &str) -> String {
@@ -376,8 +416,14 @@ fn load_ban_source_from_env() -> Result<BanSource, InitError> {
         reason_col: read_env_or_default("BANS_COL_REASON", "reason"),
     };
 
+    if !validate_table_name(source.table.as_str()) {
+        return Err(InitError::InvalidIdentifier {
+            field: "BANS_TABLE",
+            value: source.table.to_owned(),
+        });
+    }
+
     for (field, value) in [
-        ("BANS_TABLE", source.table.as_str()),
         ("BANS_COL_ID", source.id_col.as_str()),
         ("BANS_COL_INTRUDER", source.intruder_col.as_str()),
         ("BANS_COL_ADMIN", source.admin_col.as_str()),

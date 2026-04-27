@@ -68,6 +68,9 @@ pub(crate) enum AppError {
         #[source]
         source: sea_orm::DbErr,
     },
+
+    #[error("invalid column mapping in `{field}`: `{value}`")]
+    InvalidColumnMapping { field: &'static str, value: String },
 }
 
 #[derive(Clone, Debug)]
@@ -562,35 +565,219 @@ fn quoted_table_name(table: &str) -> String {
         .join(".")
 }
 
+#[derive(Debug, Clone)]
+enum ColumnMapping {
+    Direct {
+        column: String,
+    },
+    Related {
+        local_key: String,
+        table: String,
+        remote_key: String,
+        value_column: String,
+    },
+}
+
+fn parse_column_mapping(raw: &str) -> Option<ColumnMapping> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.matches("->").count() > 1 {
+        return None;
+    }
+
+    if let Some((local_key, relation)) = trimmed.split_once("->") {
+        let local_key = local_key.trim().to_owned();
+        let (table_and_remote, value_column) = relation.split_once("::")?;
+        let (table_name_raw, remote_key) = table_and_remote.rsplit_once('.')?;
+        let table = table_name_raw.trim().trim_matches('"').to_owned();
+        return Some(ColumnMapping::Related {
+            local_key,
+            table,
+            remote_key: remote_key.trim().to_owned(),
+            value_column: value_column.trim().to_owned(),
+        });
+    }
+
+    Some(ColumnMapping::Direct {
+        column: trimmed.to_owned(),
+    })
+}
+
+fn select_expression(
+    table_alias: &str,
+    raw_mapping: &str,
+    relation_alias_index: &mut usize,
+    joins: &mut Vec<String>,
+) -> Option<String> {
+    match parse_column_mapping(raw_mapping)? {
+        ColumnMapping::Direct { column } => Some(format!(
+            "{table_alias}.{}",
+            quoted_identifier(column.as_str())
+        )),
+        ColumnMapping::Related {
+            local_key,
+            table,
+            remote_key,
+            value_column,
+        } => {
+            let relation_alias = format!("rel_{}", *relation_alias_index);
+            *relation_alias_index += 1;
+            joins.push(format!(
+                "LEFT JOIN {} AS {} ON {table_alias}.{} = {}.{}",
+                quoted_table_name(&table),
+                relation_alias,
+                quoted_identifier(&local_key),
+                relation_alias,
+                quoted_identifier(&remote_key),
+            ));
+            Some(format!(
+                "{}.{}",
+                relation_alias,
+                quoted_identifier(&value_column)
+            ))
+        }
+    }
+}
+
+fn base_filter_column(raw_mapping: &str) -> Option<String> {
+    match parse_column_mapping(raw_mapping)? {
+        ColumnMapping::Direct { column } => Some(column),
+        ColumnMapping::Related { local_key, .. } => Some(local_key),
+    }
+}
+
 async fn load_ban_record(
     db: &sea_orm::DatabaseConnection,
     source: &BanSource,
     ban_id: i32,
 ) -> Result<Option<BanRecord>, AppError> {
+    let base_alias = "bans_src";
+    let mut joins = Vec::new();
+    let mut relation_alias_index = 0;
+    let id_expr = select_expression(
+        base_alias,
+        &source.id_col,
+        &mut relation_alias_index,
+        &mut joins,
+    )
+    .ok_or_else(|| AppError::InvalidColumnMapping {
+        field: "BANS_COL_ID",
+        value: source.id_col.clone(),
+    })?;
+    let intruder_expr = select_expression(
+        base_alias,
+        &source.intruder_col,
+        &mut relation_alias_index,
+        &mut joins,
+    )
+    .ok_or_else(|| AppError::InvalidColumnMapping {
+        field: "BANS_COL_INTRUDER",
+        value: source.intruder_col.clone(),
+    })?;
+    let admin_expr = select_expression(
+        base_alias,
+        &source.admin_col,
+        &mut relation_alias_index,
+        &mut joins,
+    )
+    .ok_or_else(|| AppError::InvalidColumnMapping {
+        field: "BANS_COL_ADMIN",
+        value: source.admin_col.clone(),
+    })?;
+    let kind_expr = select_expression(
+        base_alias,
+        &source.kind_col,
+        &mut relation_alias_index,
+        &mut joins,
+    )
+    .ok_or_else(|| AppError::InvalidColumnMapping {
+        field: "BANS_COL_TYPE",
+        value: source.kind_col.clone(),
+    })?;
+    let round_id_expr = select_expression(
+        base_alias,
+        &source.round_id_col,
+        &mut relation_alias_index,
+        &mut joins,
+    )
+    .ok_or_else(|| AppError::InvalidColumnMapping {
+        field: "BANS_COL_ROUND_ID",
+        value: source.round_id_col.clone(),
+    })?;
+    let server_expr = select_expression(
+        base_alias,
+        &source.server_col,
+        &mut relation_alias_index,
+        &mut joins,
+    )
+    .ok_or_else(|| AppError::InvalidColumnMapping {
+        field: "BANS_COL_SERVER",
+        value: source.server_col.clone(),
+    })?;
+    let created_at_expr = select_expression(
+        base_alias,
+        &source.created_at_col,
+        &mut relation_alias_index,
+        &mut joins,
+    )
+    .ok_or_else(|| AppError::InvalidColumnMapping {
+        field: "BANS_COL_CREATED_AT",
+        value: source.created_at_col.clone(),
+    })?;
+    let duration_end_expr = select_expression(
+        base_alias,
+        &source.duration_end_col,
+        &mut relation_alias_index,
+        &mut joins,
+    )
+    .ok_or_else(|| AppError::InvalidColumnMapping {
+        field: "BANS_COL_DURATION_END",
+        value: source.duration_end_col.clone(),
+    })?;
+    let reason_expr = select_expression(
+        base_alias,
+        &source.reason_col,
+        &mut relation_alias_index,
+        &mut joins,
+    )
+    .ok_or_else(|| AppError::InvalidColumnMapping {
+        field: "BANS_COL_REASON",
+        value: source.reason_col.clone(),
+    })?;
+    let id_filter_col =
+        base_filter_column(&source.id_col).ok_or_else(|| AppError::InvalidColumnMapping {
+            field: "BANS_COL_ID",
+            value: source.id_col.clone(),
+        })?;
+    let joins_sql = joins.join("\n         ");
+
     let query = format!(
         "SELECT
-            {id_col}::int4 AS id,
-            COALESCE({intruder_col}::text, '') AS intruder,
-            COALESCE({admin_col}::text, '') AS admin,
-            COALESCE({kind_col}::text, '') AS kind,
-            COALESCE({round_id_col}::int4, 0) AS round_id,
-            COALESCE({server_col}::text, '') AS server,
-            COALESCE({created_at_col}::text, '') AS created_at,
-            COALESCE({duration_end_col}::text, '') AS duration_end,
-            COALESCE({reason_col}::text, '') AS reason
-         FROM {table_name}
-         WHERE {id_col} = $1
+            {id_expr}::int4 AS id,
+            COALESCE({intruder_expr}::text, '') AS intruder,
+            COALESCE({admin_expr}::text, '') AS admin,
+            COALESCE({kind_expr}::text, '') AS kind,
+            COALESCE({round_id_expr}::int4, 0) AS round_id,
+            COALESCE({server_expr}::text, '') AS server,
+            COALESCE({created_at_expr}::text, '') AS created_at,
+            COALESCE({duration_end_expr}::text, '') AS duration_end,
+            COALESCE({reason_expr}::text, '') AS reason
+         FROM {table_name} AS {base_alias}
+         {joins_sql}
+         WHERE {base_alias}.{id_col} = $1
          LIMIT 1",
-        id_col = quoted_identifier(&source.id_col),
-        intruder_col = quoted_identifier(&source.intruder_col),
-        admin_col = quoted_identifier(&source.admin_col),
-        kind_col = quoted_identifier(&source.kind_col),
-        round_id_col = quoted_identifier(&source.round_id_col),
-        server_col = quoted_identifier(&source.server_col),
-        created_at_col = quoted_identifier(&source.created_at_col),
-        duration_end_col = quoted_identifier(&source.duration_end_col),
-        reason_col = quoted_identifier(&source.reason_col),
+        id_expr = id_expr,
+        intruder_expr = intruder_expr,
+        admin_expr = admin_expr,
+        kind_expr = kind_expr,
+        round_id_expr = round_id_expr,
+        server_expr = server_expr,
+        created_at_expr = created_at_expr,
+        duration_end_expr = duration_end_expr,
+        reason_expr = reason_expr,
+        id_col = quoted_identifier(&id_filter_col),
         table_name = quoted_table_name(&source.table),
+        base_alias = base_alias,
+        joins_sql = joins_sql,
     );
 
     let rows = db
