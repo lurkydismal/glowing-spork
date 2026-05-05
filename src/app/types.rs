@@ -6,7 +6,7 @@ use poise::serenity_prelude as serenity;
 use sea_orm::DatabaseConnection;
 use tokio::sync::RwLock;
 
-use crate::app::embed::EmbedTemplate;
+use crate::app::embed::EmbedTemplates;
 use crate::app::runtime::{BanEventType, BanSource};
 
 /// Bundles runtime resources used by the application event loop.
@@ -24,7 +24,7 @@ pub(super) struct Connection {
     /// Background Discord client task.
     pub(super) discord_task: tokio::task::JoinHandle<()>,
     /// Message template used to format newsletter announcements.
-    pub(super) embed_template: Arc<RwLock<EmbedTemplate>>,
+    pub(super) embed_template: Arc<RwLock<EmbedTemplates>>,
     /// File watcher handle kept alive for EMBED_FILE hot reload.
     #[expect(dead_code)]
     pub(super) embed_template_watcher: Option<RecommendedWatcher>,
