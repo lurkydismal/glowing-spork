@@ -131,8 +131,7 @@ impl EmbedTemplate {
     /// </embed>
     /// ```
     pub(super) fn from_xml(xml: &str) -> Result<Self, EmbedTemplateError> {
-        let bundle = EmbedTemplates::from_xml(xml)?;
-        Ok(bundle.default)
+        parse_single_embed(xml)
     }
 }
 
@@ -166,7 +165,7 @@ impl EmbedTemplates {
         let mut explicit_default_used = false;
         for embed_xml in split_embed_blocks(xml) {
             let lang = extract_embed_lang(embed_xml);
-            let parsed = parse_single_embed(embed_xml)?;
+            let parsed = EmbedTemplate::from_xml(embed_xml)?;
             if let Some(lang) = lang {
                 let normalized = crate::app::i18n::normalize_locale(Some(&lang)).unwrap_or(lang);
                 localized.insert(normalized, parsed.clone());
