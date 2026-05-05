@@ -1,5 +1,6 @@
 use log::{debug, trace};
 use quick_xml::{Reader, events::Event};
+use std::collections::HashMap;
 
 use crate::app::i18n::Translations;
 
@@ -16,6 +17,15 @@ pub(crate) enum EmbedTemplateError {
 
     #[error("`<footer>` must be the last element in `<embed>`")]
     FooterMustBeLast,
+
+    #[error("multiple `<embed>` blocks without `lang` are not allowed")]
+    DuplicateDefaultEmbed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct EmbedTemplates {
+    pub(super) default: EmbedTemplate,
+    pub(super) localized: HashMap<String, EmbedTemplate>,
 }
 
 /// Runtime configuration for building newsletter messages from an XML template.
@@ -121,166 +131,244 @@ impl EmbedTemplate {
     /// </embed>
     /// ```
     pub(super) fn from_xml(xml: &str) -> Result<Self, EmbedTemplateError> {
+        let bundle = EmbedTemplates::from_xml(xml)?;
+        Ok(bundle.default)
+    }
+}
+
+impl EmbedTemplates {
+    pub(super) fn default_template() -> Self {
+        Self {
+            default: EmbedTemplate::default_template(),
+            localized: HashMap::new(),
+        }
+    }
+
+    pub(super) fn resolve_for_locale(&self, locale: Option<&str>) -> EmbedTemplate {
+        if let Some(locale) = crate::app::i18n::normalize_locale(locale)
+            && let Some(found) = self.localized.get(&locale)
+        {
+            return found.clone();
+        }
+        self.default.clone()
+    }
+
+    pub(super) fn locales(&self) -> Vec<String> {
+        let mut locales: Vec<String> = self.localized.keys().cloned().collect();
+        locales.sort_unstable();
+        locales
+    }
+
+    pub(super) fn from_xml(xml: &str) -> Result<Self, EmbedTemplateError> {
         trace!("parsing XML embed template");
-        let mut reader = Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
-
-        let mut title: Option<String> = None;
-        let mut color: Option<String> = None;
-        let mut footer: Option<String> = None;
-        let mut lines: Vec<EmbedLine> = Vec::new();
-        let mut current_tag: Option<Vec<u8>> = None;
-        let mut current_line: Option<EmbedLine> = None;
-        let mut group_stack: Vec<(usize, bool)> = Vec::new();
-        let mut next_group_id = 1usize;
-        let mut footer_closed = false;
-
-        loop {
-            match reader.read_event()? {
-                Event::Start(start) => {
-                    let tag = start.name().as_ref().to_vec();
-                    if footer_closed {
-                        return Err(EmbedTemplateError::FooterMustBeLast);
-                    }
-                    if tag.as_slice() == b"group" {
-                        let row_group = start
-                            .attributes()
-                            .filter_map(Result::ok)
-                            .find_map(|attr| {
-                                (attr.key.as_ref() == b"direction").then(|| {
-                                    String::from_utf8_lossy(attr.value.as_ref()).into_owned()
-                                })
-                            })
-                            .map(|direction| !direction.eq_ignore_ascii_case("column"))
-                            .unwrap_or(true);
-                        group_stack.push((next_group_id, row_group));
-                        next_group_id += 1;
-                        continue;
-                    }
-                    if tag.as_slice() == b"br" || tag.as_slice() == b"break" {
-                        if current_tag.is_some() {
-                            append_break(&current_tag, &mut title, &mut current_line);
-                        } else {
-                            lines.push(spacer_line());
-                        }
-                        continue;
-                    }
-                    if tag.as_slice() == b"line" {
-                        let line_title =
-                            start.attributes().filter_map(Result::ok).find_map(|attr| {
-                                let key = attr.key.as_ref();
-                                if key == b"title" || key == b"name" {
-                                    Some(String::from_utf8_lossy(attr.value.as_ref()).into_owned())
-                                } else {
-                                    None
-                                }
-                            });
-                        let inline_value = start
-                            .attributes()
-                            .filter_map(Result::ok)
-                            .find_map(|attr| {
-                                (attr.key.as_ref() == b"inline").then(|| {
-                                    String::from_utf8_lossy(attr.value.as_ref()).into_owned()
-                                })
-                            })
-                            .as_deref()
-                            .is_some_and(parse_bool);
-                        let (group_id, row_group) =
-                            group_stack.last().copied().unwrap_or((0, false));
-                        let group_id = (group_id != 0).then_some(group_id);
-                        let field_inline = row_group;
-                        current_line = Some(line(
-                            line_title.as_deref(),
-                            "",
-                            inline_value,
-                            field_inline,
-                            group_id,
-                            row_group,
-                            false,
-                        ));
-                    }
-                    if tag.as_slice() == b"footer" && footer.is_some() {
-                        return Err(EmbedTemplateError::DuplicateFooter);
-                    }
-                    current_tag = Some(tag);
+        let mut localized = HashMap::new();
+        let mut default_template: Option<EmbedTemplate> = None;
+        let mut explicit_default_used = false;
+        for embed_xml in split_embed_blocks(xml) {
+            let lang = extract_embed_lang(embed_xml);
+            let parsed = parse_single_embed(embed_xml)?;
+            if let Some(lang) = lang {
+                let normalized = crate::app::i18n::normalize_locale(Some(&lang)).unwrap_or(lang);
+                localized.insert(normalized, parsed.clone());
+                if default_template.is_none() {
+                    default_template = Some(parsed);
                 }
-                Event::Empty(empty) => {
-                    let tag = empty.name().as_ref().to_vec();
-                    if footer_closed {
-                        return Err(EmbedTemplateError::FooterMustBeLast);
-                    }
-                    if tag.as_slice() == b"br" || tag.as_slice() == b"break" {
-                        if current_tag.is_some() {
-                            append_break(&current_tag, &mut title, &mut current_line);
-                        } else {
-                            lines.push(spacer_line());
-                        }
-                    }
+            } else {
+                if explicit_default_used {
+                    return Err(EmbedTemplateError::DuplicateDefaultEmbed);
                 }
-                Event::Text(text) => {
-                    if let Some(tag) = &current_tag {
-                        let value = String::from_utf8_lossy(text.as_ref()).into_owned();
-                        if !value.is_empty() {
-                            match tag.as_slice() {
-                                b"title" => title = Some(value),
-                                b"color" => color = Some(value),
-                                b"footer" => footer = Some(value),
-                                b"line" => {
-                                    if let Some(line) = &mut current_line {
-                                        line.value.push_str(&value);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                Event::End(end) => {
-                    if end.name().as_ref() == b"br" || end.name().as_ref() == b"break" {
-                        continue;
-                    }
-                    if end.name().as_ref() == b"group" {
-                        group_stack.pop();
-                    }
-                    if end.name().as_ref() == b"line"
-                        && let Some(line) = current_line.take()
-                        && !line.value.is_empty()
-                    {
-                        lines.push(line);
-                    }
-                    if end.name().as_ref() == b"footer" {
-                        footer_closed = true;
-                    }
-                    current_tag = None;
-                }
-                Event::Eof => break,
-                _ => {}
+                explicit_default_used = true;
+                default_template = Some(parsed);
             }
         }
-
-        let mut template = Self::default_template();
-        if let Some(configured_title) = title {
-            template.title = configured_title;
-        }
-        if !lines.is_empty() {
-            template.lines = lines;
-        }
-        if let Some(configured_color) = color {
-            template.color = parse_color(&configured_color)?;
-        }
-        if let Some(configured_footer) = footer
-            && !configured_footer.is_empty()
-        {
-            template.footer = Some(configured_footer);
-        }
-
-        debug!(
-            "loaded embed template from XML (lines: {}, color: #{:06X})",
-            template.lines.len(),
-            template.color
-        );
-        Ok(template)
+        Ok(Self {
+            default: default_template.unwrap_or_else(EmbedTemplate::default_template),
+            localized,
+        })
     }
+}
+
+fn parse_single_embed(xml: &str) -> Result<EmbedTemplate, EmbedTemplateError> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+
+    let mut title: Option<String> = None;
+    let mut color: Option<String> = None;
+    let mut footer: Option<String> = None;
+    let mut lines: Vec<EmbedLine> = Vec::new();
+    let mut current_tag: Option<Vec<u8>> = None;
+    let mut current_line: Option<EmbedLine> = None;
+    let mut group_stack: Vec<(usize, bool)> = Vec::new();
+    let mut next_group_id = 1usize;
+    let mut footer_closed = false;
+
+    loop {
+        match reader.read_event()? {
+            Event::Start(start) => {
+                let tag = start.name().as_ref().to_vec();
+                if footer_closed {
+                    return Err(EmbedTemplateError::FooterMustBeLast);
+                }
+                if tag.as_slice() == b"group" {
+                    let row_group = start
+                        .attributes()
+                        .filter_map(Result::ok)
+                        .find_map(|attr| {
+                            (attr.key.as_ref() == b"direction")
+                                .then(|| String::from_utf8_lossy(attr.value.as_ref()).into_owned())
+                        })
+                        .map(|direction| !direction.eq_ignore_ascii_case("column"))
+                        .unwrap_or(true);
+                    group_stack.push((next_group_id, row_group));
+                    next_group_id += 1;
+                    continue;
+                }
+                if tag.as_slice() == b"br" || tag.as_slice() == b"break" {
+                    if current_tag.is_some() {
+                        append_break(&current_tag, &mut title, &mut current_line);
+                    } else {
+                        lines.push(spacer_line());
+                    }
+                    continue;
+                }
+                if tag.as_slice() == b"line" {
+                    let line_title = start.attributes().filter_map(Result::ok).find_map(|attr| {
+                        let key = attr.key.as_ref();
+                        if key == b"title" || key == b"name" {
+                            Some(String::from_utf8_lossy(attr.value.as_ref()).into_owned())
+                        } else {
+                            None
+                        }
+                    });
+                    let inline_value = start
+                        .attributes()
+                        .filter_map(Result::ok)
+                        .find_map(|attr| {
+                            (attr.key.as_ref() == b"inline")
+                                .then(|| String::from_utf8_lossy(attr.value.as_ref()).into_owned())
+                        })
+                        .as_deref()
+                        .is_some_and(parse_bool);
+                    let (group_id, row_group) = group_stack.last().copied().unwrap_or((0, false));
+                    let group_id = (group_id != 0).then_some(group_id);
+                    let field_inline = row_group;
+                    current_line = Some(line(
+                        line_title.as_deref(),
+                        "",
+                        inline_value,
+                        field_inline,
+                        group_id,
+                        row_group,
+                        false,
+                    ));
+                }
+                if tag.as_slice() == b"footer" && footer.is_some() {
+                    return Err(EmbedTemplateError::DuplicateFooter);
+                }
+                current_tag = Some(tag);
+            }
+            Event::Empty(empty) => {
+                let tag = empty.name().as_ref().to_vec();
+                if footer_closed {
+                    return Err(EmbedTemplateError::FooterMustBeLast);
+                }
+                if tag.as_slice() == b"br" || tag.as_slice() == b"break" {
+                    if current_tag.is_some() {
+                        append_break(&current_tag, &mut title, &mut current_line);
+                    } else {
+                        lines.push(spacer_line());
+                    }
+                }
+            }
+            Event::Text(text) => {
+                if let Some(tag) = &current_tag {
+                    let value = String::from_utf8_lossy(text.as_ref()).into_owned();
+                    if !value.is_empty() {
+                        match tag.as_slice() {
+                            b"title" => title = Some(value),
+                            b"color" => color = Some(value),
+                            b"footer" => footer = Some(value),
+                            b"line" => {
+                                if let Some(line) = &mut current_line {
+                                    line.value.push_str(&value);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Event::End(end) => {
+                if end.name().as_ref() == b"br" || end.name().as_ref() == b"break" {
+                    continue;
+                }
+                if end.name().as_ref() == b"group" {
+                    group_stack.pop();
+                }
+                if end.name().as_ref() == b"line"
+                    && let Some(line) = current_line.take()
+                    && !line.value.is_empty()
+                {
+                    lines.push(line);
+                }
+                if end.name().as_ref() == b"footer" {
+                    footer_closed = true;
+                }
+                current_tag = None;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    let mut template = EmbedTemplate::default_template();
+    if let Some(configured_title) = title {
+        template.title = configured_title;
+    }
+    if !lines.is_empty() {
+        template.lines = lines;
+    }
+    if let Some(configured_color) = color {
+        template.color = parse_color(&configured_color)?;
+    }
+    if let Some(configured_footer) = footer
+        && !configured_footer.is_empty()
+    {
+        template.footer = Some(configured_footer);
+    }
+
+    debug!(
+        "loaded embed template from XML (lines: {}, color: #{:06X})",
+        template.lines.len(),
+        template.color
+    );
+    Ok(template)
+}
+
+fn split_embed_blocks(xml: &str) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    let mut offset = 0usize;
+    while let Some(start) = xml[offset..].find("<embed") {
+        let absolute = offset + start;
+        if let Some(end_rel) = xml[absolute..].find("</embed>") {
+            let end = absolute + end_rel + "</embed>".len();
+            blocks.push(&xml[absolute..end]);
+            offset = end;
+            continue;
+        }
+        break;
+    }
+    if blocks.is_empty() { vec![xml] } else { blocks }
+}
+
+fn extract_embed_lang(xml: &str) -> Option<String> {
+    let head_end = xml.find('>').unwrap_or(0);
+    let head = &xml[..head_end];
+    let needle = "lang=\"";
+    let start = head.find(needle)? + needle.len();
+    let rest = &head[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_owned())
 }
 
 fn line(

@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use crate::app::{
     db::db_connect,
     discord::start_discord_bot,
-    embed::{EmbedTemplate, EmbedTemplateError},
+    embed::{EmbedTemplateError, EmbedTemplates},
     listener::{ListenerCreateError, listener_create},
     runtime::{BanEventType, BanSource},
     types::Connection,
@@ -449,7 +449,7 @@ fn load_ban_source_from_env() -> Result<BanSource, InitError> {
 ///
 /// Falls back to the default template when `EMBED_FILE` is not set.
 #[allow(clippy::result_large_err)]
-fn load_embed_template() -> Result<(EmbedTemplate, Option<PathBuf>), InitError> {
+fn load_embed_template() -> Result<(EmbedTemplates, Option<PathBuf>), InitError> {
     let started_at = Instant::now();
     trace!("load_embed_template started at {started_at:?}");
 
@@ -460,7 +460,7 @@ fn load_embed_template() -> Result<(EmbedTemplate, Option<PathBuf>), InitError> 
                 "EMBED_FILE was not provided; using default template (loaded in {:?})",
                 started_at.elapsed()
             );
-            return Ok((EmbedTemplate::default_template(), None));
+            return Ok((EmbedTemplates::default_template(), None));
         }
     };
 
@@ -469,7 +469,7 @@ fn load_embed_template() -> Result<(EmbedTemplate, Option<PathBuf>), InitError> 
         source,
     })?;
 
-    let template = EmbedTemplate::from_xml(&xml).map_err(|source| InitError::InvalidEmbedXml {
+    let template = EmbedTemplates::from_xml(&xml).map_err(|source| InitError::InvalidEmbedXml {
         path: embed_path.clone(),
         source,
     })?;
@@ -483,7 +483,7 @@ fn load_embed_template() -> Result<(EmbedTemplate, Option<PathBuf>), InitError> 
 #[allow(clippy::result_large_err)]
 fn start_embed_template_hot_reload(
     embed_path: PathBuf,
-    embed_template: Arc<RwLock<EmbedTemplate>>,
+    embed_template: Arc<RwLock<EmbedTemplates>>,
 ) -> Result<RecommendedWatcher, InitError> {
     let watch_root = embed_path
         .parent()
@@ -527,8 +527,9 @@ fn start_embed_template_hot_reload(
                     }) =>
                 {
                     match std::fs::read_to_string(&embed_path) {
-                        Ok(xml) => match EmbedTemplate::from_xml(&xml) {
+                        Ok(xml) => match EmbedTemplates::from_xml(&xml) {
                             Ok(next_template) => {
+                                crate::app::i18n::set_available_locales(next_template.locales());
                                 *embed_template.write().await = next_template;
                                 info!("reloaded EMBED_FILE template from {:?}", embed_path);
                             }
@@ -580,6 +581,7 @@ pub(super) async fn init() -> Result<Connection, InitError> {
     debug!("ban source table: {}", ban_source.table);
 
     let (embed_template, embed_path) = load_embed_template()?;
+    crate::app::i18n::set_available_locales(embed_template.locales());
     let embed_template = Arc::new(RwLock::new(embed_template));
     let embed_template_watcher = match embed_path {
         Some(path) => Some(start_embed_template_hot_reload(

@@ -394,7 +394,7 @@ async fn load_pending_events(
 
 /// Formats a rich ban announcement embed for Discord newsletters using locale preferences.
 fn format_ban_embed_for_locale(
-    template: &EmbedTemplate,
+    templates: &EmbedTemplates,
     ban: &BanRecord,
     channel_locale: Option<&str>,
     user_locale: Option<&str>,
@@ -407,10 +407,11 @@ fn format_ban_embed_for_locale(
     );
     let translations =
         crate::app::i18n::resolve_translations(channel_locale.or(user_locale), guild_locale);
-    let localized_template = if template == &EmbedTemplate::default_template() {
+    let template = templates.resolve_for_locale(channel_locale.or(user_locale).or(guild_locale));
+    let localized_template = if template == EmbedTemplate::default_template() {
         EmbedTemplate::default_template_for(translations.clone())
     } else {
-        template.clone()
+        template
     };
     let time_placeholders = resolve_time_placeholders(&ban.created_at, &ban.duration_end);
 
@@ -828,7 +829,7 @@ async fn load_ban_record(
 async fn handle_ban_event(
     http: std::sync::Arc<serenity::Http>,
     newsletter_db: &sea_orm::DatabaseConnection,
-    template: &EmbedTemplate,
+    templates: &EmbedTemplates,
     ban: &BanRecord,
     event_type: BanEventType,
 ) -> Result<(), AppError> {
@@ -852,12 +853,12 @@ async fn handle_ban_event(
     for channel in channels {
         let http = http.clone();
         let newsletter_db = newsletter_db.clone();
-        let template = template.clone();
+        let templates = templates.clone();
         let ban = ban.clone();
         tasks.spawn(async move {
             let channel_id = channel.channel_id;
             let embed = format_ban_embed_for_locale(
-                &template,
+                &templates,
                 &ban,
                 channel.channel_locale.as_deref(),
                 channel.user_locale.as_deref(),
@@ -949,11 +950,11 @@ async fn process_ban_event(
             warn!("ban {ban_id} not found");
             AppError::BanNotFound { ban_id }
         })?;
-    let template = connection.embed_template.read().await.clone();
+    let templates = connection.embed_template.read().await.clone();
     handle_ban_event(
         connection.discord_http.clone(),
         &connection.newsletter_db,
-        &template,
+        &templates,
         &ban,
         event_type,
     )
