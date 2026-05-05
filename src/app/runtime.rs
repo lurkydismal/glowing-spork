@@ -8,7 +8,7 @@ use tokio::task::JoinSet;
 use crate::app::{
     db::close,
     discord::list_registered_channels,
-    embed::{EmbedLine, EmbedTemplate},
+    embed::{EmbedLine, EmbedTemplate, EmbedTemplates},
     init::{InitError, init},
 };
 
