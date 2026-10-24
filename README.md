@@ -50,7 +50,9 @@ Channel registrations and their locale preferences are stored separately in SQLi
 
 ## Screenshots
 
-No screenshots have been added yet.
+![English screenshot](./screenshots/en.png)
+![Deutsch screenshot](./screenshots/de.png)
+![French screenshot](./screenshots/fr.png)
 
 ## Setup
 
