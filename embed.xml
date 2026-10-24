@@ -1,0 +1,119 @@
+<embed lang="en">
+    <title>Ban #{id}</title>
+
+    <color>#992D22</color>
+
+    <group direction="row">
+        <line title="Offender:" inline="true">{intruder}</line>
+        <line title="Administrator:" inline="true">{admin}</line>
+    </group>
+
+    <br />
+
+    <group direction="row">
+        <line title="Ban Type:" inline="true">{type}</line>
+        <line title="Round ID:" inline="true">{round_id}</line>
+        <line title="Server:" inline="true">{server}</line>
+    </group>
+
+    <br />
+
+    <group direction="row">
+        <line title="Duration:" inline="true">{time_left}</line>
+        <line title="Reason:" inline="true">{reason_display}</line>
+    </group>
+
+    <br />
+
+    <footer>{admin} • {duration_end}•{date}, {time}</footer>
+</embed>
+
+<embed lang="fr">
+    <title>Ban n°{id}</title>
+
+    <color>#992D22</color>
+
+    <group direction="row">
+        <line title="Contrevenant :" inline="true">{intruder}</line>
+        <line title="Administrateur :" inline="true">{admin}</line>
+    </group>
+
+    <br />
+
+    <group direction="row">
+        <line title="Type de ban :" inline="true">{type}</line>
+        <line title="ID de manche :" inline="true">{round_id}</line>
+        <line title="Serveur :" inline="true">{server}</line>
+    </group>
+
+    <br />
+
+    <group direction="row">
+        <line title="Durée :" inline="true">{time_left}</line>
+        <line title="Raison :" inline="true">{reason_display}</line>
+    </group>
+
+    <br />
+
+    <footer>{admin} • {duration_end}•{date}, {time}</footer>
+</embed>
+
+<embed lang="de">
+    <title>Ban Nr. {id}</title>
+
+    <color>#992D22</color>
+
+    <group direction="row">
+        <line title="Verstoßender:" inline="true">{intruder}</line>
+        <line title="Administrator:" inline="true">{admin}</line>
+    </group>
+
+    <br />
+
+    <group direction="row">
+        <line title="Banntyp:" inline="true">{type}</line>
+        <line title="Runden-ID:" inline="true">{round_id}</line>
+        <line title="Server:" inline="true">{server}</line>
+    </group>
+
+    <br />
+
+    <group direction="row">
+        <line title="Dauer:" inline="true">{time_left}</line>
+        <line title="Grund:" inline="true">{reason_display}</line>
+    </group>
+
+    <br />
+
+    <footer>{admin} • {duration_end}•{date}, {time}</footer>
+</embed>
+
+<embed lang="ru">
+    <title>Бан №{id}</title>
+
+    <color>#992D22</color>
+
+    <group direction="row">
+        <line title="Нарушитель:" inline="true">{intruder}</line>
+        <line title="Администратор:" inline="true">{admin}</line>
+    </group>
+
+    <br />
+
+    <group direction="row">
+        <line title="Тип Бана:" inline="true">{type}</line>
+        <line title="Айди Раунда:" inline="true">{round_id}</line>
+        <line title="Сервер:" inline="true">{server}</line>
+    </group>
+
+    <br />
+
+    <group direction="row">
+        <line title="Длительность:" inline="true">{time_left}</line>
+        <line title="Причина:" inline="true">{reason_display}</line>
+    </group>
+
+    <br />
+
+    <footer>{admin} • {duration_end}•{date}, {time}</footer>
+</embed>
